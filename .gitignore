@@ -1,0 +1,9 @@
+data/
+bin/
+dist/
+.testrun/
+.shots*/
+*.exe
+*~
+*.log
+.DS_Store
