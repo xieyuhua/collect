@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,26 +34,58 @@ type Engine struct {
 	nt  *notify.Notifier
 
 	mu      sync.Mutex
-	running map[uint]bool
+	running map[uint]*runControl
+}
+
+type runControl struct {
+	runID  uint
+	cancel context.CancelFunc
 }
 
 func NewEngine(cfg *config.Config, db *gorm.DB, log *applog.Logger, bm *browser.Manager, nt *notify.Notifier) *Engine {
-	return &Engine{cfg: cfg, db: db, log: log, bm: bm, nt: nt, running: map[uint]bool{}}
+	return &Engine{cfg: cfg, db: db, log: log, bm: bm, nt: nt, running: map[uint]*runControl{}}
 }
 
 func (e *Engine) IsRunning(taskID uint) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.running[taskID]
+	return e.running[taskID] != nil
 }
 
 func (e *Engine) acquire(taskID uint) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.running[taskID] {
+	if e.running[taskID] != nil {
 		return false
 	}
-	e.running[taskID] = true
+	e.running[taskID] = &runControl{}
+	return true
+}
+
+func (e *Engine) attach(taskID, runID uint, cancel context.CancelFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ctrl := e.running[taskID]; ctrl != nil {
+		ctrl.runID = runID
+		ctrl.cancel = cancel
+	}
+}
+
+// Stop sends a cancellation signal to a running task and reports whether the run was active.
+func (e *Engine) Stop(runID uint) bool {
+	e.mu.Lock()
+	var cancel context.CancelFunc
+	for _, ctrl := range e.running {
+		if ctrl != nil && ctrl.runID == runID {
+			cancel = ctrl.cancel
+			break
+		}
+	}
+	e.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
 	return true
 }
 
@@ -81,13 +114,18 @@ func (e *Engine) Start(taskID uint, trigger string) (*model.RunLog, error) {
 	}
 	e.db.Model(&model.Task{}).Where("id = ?", task.ID).
 		Updates(map[string]any{"last_run_at": run.StartedAt, "last_status": "running", "last_message": ""})
-	go e.execute(&task, &run)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.attach(task.ID, run.ID, cancel)
+	go func() {
+		defer cancel()
+		e.execute(ctx, &task, &run)
+	}()
 	return &run, nil
 }
 
-func (e *Engine) execute(task *model.Task, run *model.RunLog) {
+func (e *Engine) execute(ctx context.Context, task *model.Task, run *model.RunLog) {
 	defer e.release(task.ID)
-	c := &runCtx{e: e, task: task, run: run, vars: NewVars(), seq: 0}
+	c := &runCtx{ctx: ctx, e: e, task: task, run: run, vars: NewVars(), seq: 0}
 	for _, kv := range task.VarsList() {
 		if strings.TrimSpace(kv.Key) != "" {
 			c.vars.Set(strings.TrimSpace(kv.Key), kv.Value)
@@ -126,6 +164,7 @@ func (e *Engine) execute(task *model.Task, run *model.RunLog) {
 }
 
 type runCtx struct {
+	ctx      context.Context
 	e        *Engine
 	task     *model.Task
 	run      *model.RunLog
@@ -250,7 +289,11 @@ func (c *runCtx) finish() {
 	now := time.Now()
 	c.run.FinishedAt = &now
 	c.run.DurationMs = now.Sub(c.run.StartedAt).Milliseconds()
-	if c.err != nil {
+	stopped := errors.Is(c.ctx.Err(), context.Canceled)
+	if stopped {
+		c.run.Status = "stopped"
+		c.run.Error = "用户手动结束"
+	} else if c.err != nil {
 		c.run.Error = c.err.Error()
 		if c.run.Inserted > 0 {
 			c.run.Status = "partial"
@@ -271,9 +314,12 @@ func (c *runCtx) finish() {
 	c.e.db.Model(&model.Task{}).Where("id = ?", c.task.ID).Updates(map[string]any{
 		"last_run_at": now, "last_status": c.run.Status, "last_message": summary,
 	})
-	if c.run.Status == "success" {
+	switch c.run.Status {
+	case "success":
 		c.e.log.Info("engine", "任务 %s 执行成功: %s", c.task.Name, summary)
-	} else {
+	case "stopped":
+		c.e.log.Info("engine", "任务 %s 已手动结束: %s", c.task.Name, summary)
+	default:
 		c.e.log.Error("engine", "任务 %s 执行%s: %s %s", c.task.Name, map[string]string{"failed": "失败", "partial": "部分成功"}[c.run.Status], summary, c.run.Error)
 	}
 	c.e.nt.NotifyRun(c.task, c.run)
@@ -285,6 +331,9 @@ func (c *runCtx) finish() {
 // ---------- HTTP 采集 ----------
 
 func (c *runCtx) runAPI() error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	if n := len(c.task.UIStepList()) + len(c.task.LoginStepList()); n > 0 {
 		c.e.log.Warn("engine", "当前是「纯接口」模式，不启动浏览器：已忽略 %d 条 UI / 登录动作；需要页面操作请把采集模式改成「混合」或「纯 UI」", n)
 	}
@@ -295,9 +344,14 @@ func (c *runCtx) runAPI() error {
 	pgDefault := c.task.PaginationCfg()
 	applied := false
 	for i := range steps {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
 		step := steps[i]
 		if step.DelayMs > 0 {
-			time.Sleep(time.Duration(step.DelayMs) * time.Millisecond)
+			if err := c.sleep(time.Duration(step.DelayMs) * time.Millisecond); err != nil {
+				return err
+			}
 		}
 		pg := pgDefault
 		if step.Pagination != nil {
@@ -376,7 +430,7 @@ func (c *runCtx) doHTTP(step *model.HTTPStep, name string) (*HTTPResult, error) 
 		Method: strings.ToUpper(step.Method), URL: urlStr, ReqHeaders: mustJSON(headers),
 		ReqBody: c.truncate(body), CreatedAt: start,
 	}
-	res, err := c.exec.Do(step.Method, urlStr, headers, body, step.ContentType)
+	res, err := c.exec.DoContext(c.ctx, step.Method, urlStr, headers, body, step.ContentType)
 	s.DurationMs = time.Since(start).Milliseconds()
 	if res != nil {
 		s.RespStatus = res.Status
@@ -384,8 +438,13 @@ func (c *runCtx) doHTTP(step *model.HTTPStep, name string) (*HTTPResult, error) 
 		s.RespBody = c.truncate(res.Text)
 	}
 	if err != nil {
-		s.Status = "failed"
-		s.Error = err.Error()
+		if c.ctx.Err() != nil {
+			s.Status = "stopped"
+			s.Error = "用户手动结束"
+		} else {
+			s.Status = "failed"
+			s.Error = err.Error()
+		}
 		c.saveStep(s)
 		return res, err
 	}
@@ -566,6 +625,9 @@ func (c *runCtx) runPaginated(step *model.HTTPStep, pg model.Pagination, batch S
 	fetched := 0
 	cursor := ""
 	for i := 0; i < pg.MaxPages; i++ {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
 		c.vars.Set("page", strconv.Itoa(page))
 		c.vars.Set("pageSize", strconv.Itoa(pg.PageSize))
 		c.vars.Set("offset", strconv.Itoa((page-pg.StartPage)*pg.PageSize))
@@ -605,10 +667,26 @@ func (c *runCtx) runPaginated(step *model.HTTPStep, pg model.Pagination, batch S
 			break
 		}
 		if pg.DelayMs > 0 {
-			time.Sleep(time.Duration(pg.DelayMs) * time.Millisecond)
+			if err := c.sleep(time.Duration(pg.DelayMs) * time.Millisecond); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (c *runCtx) sleep(d time.Duration) error {
+	if d <= 0 {
+		return c.ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -685,6 +763,9 @@ func injectBodyParam(body, key, val string) string {
 // ---------- UI 采集 ----------
 
 func (c *runCtx) runUI() error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	steps := c.task.UIStepList()
 	if len(steps) == 0 {
 		return errors.New("未配置 UI 操作步骤")
@@ -714,7 +795,7 @@ func (c *runCtx) runUI() error {
 		return err
 	}
 	c.e.bm.ApplyFingerprint(page)
-	rep := browser.NewReplayer(page, c.e.cfg.MaxBodyKB, c.e.log)
+	rep := browser.NewReplayer(page, c.e.cfg.MaxBodyKB, c.e.log).WithContext(c.ctx)
 	rep.OnStep = c.uiStepLogger()
 	// 记录最后一次「打开页面」的时间点：点击翻页抓取第 1 页时只统计这之后
 	// 产生的接口请求，避免把上个页面（如登录后跳转的门店页）的数据混进来。
@@ -743,15 +824,6 @@ func (c *runCtx) runUI() error {
 			c.watchCaptured(rep, rules, tracker, stopWatch)
 		}()
 	}
-	repErr := rep.Run(steps)
-
-	capCfg := c.task.CaptureCfg()
-	if capCfg.WaitMs > 0 {
-		time.Sleep(time.Duration(capCfg.WaitMs) * time.Millisecond)
-	}
-	if needNet {
-		c.waitCaptured(rep, rules, 20*time.Second)
-	}
 	// 注意：录制器与请求监听要一直保持到所有抓取规则处理完，
 	// 因为「点击下一页」翻页时每一页新产生的请求都要继续捕获并写入步骤日志。
 	defer func() {
@@ -763,6 +835,20 @@ func (c *runCtx) runUI() error {
 		wg.Wait()
 		rep.Stop()
 	}()
+	repErr := rep.Run(steps)
+
+	capCfg := c.task.CaptureCfg()
+	if capCfg.WaitMs > 0 {
+		if err := c.sleep(time.Duration(capCfg.WaitMs) * time.Millisecond); err != nil {
+			return err
+		}
+	}
+	if needNet {
+		c.waitCaptured(rep, rules, 20*time.Second)
+	}
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 
 	if len(rules) == 0 {
 		return fmt.Errorf("未配置抓取规则，请在「抓取配置」中添加要采集的接口或 DOM 表格")
@@ -790,6 +876,9 @@ func (c *runCtx) runUI() error {
 
 	var msgs []string
 	for i, rule := range rules {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
 		pg := model.Pagination{}
 		hasPg := rule.Pagination != nil && rule.Pagination.Enabled
 		if hasPg {
@@ -1033,8 +1122,13 @@ func (c *runCtx) uiPaginate(rep *browser.Replayer, page *rod.Page, rule model.Ca
 	// ---- 逐页点击「下一页」----
 	emptyStreak := 0
 	for pages < maxPages {
+		if err := c.ctx.Err(); err != nil {
+			return pages, rows, err
+		}
 		if pg.DelayMs > 0 {
-			time.Sleep(time.Duration(pg.DelayMs) * time.Millisecond)
+			if err := c.sleep(time.Duration(pg.DelayMs) * time.Millisecond); err != nil {
+				return pages, rows, err
+			}
 		}
 		beforeReqs := len(rep.Rec.Requests())
 		sigBefore := ""
@@ -1053,7 +1147,9 @@ func (c *runCtx) uiPaginate(rep *browser.Replayer, page *rod.Page, rule model.Ca
 		deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
 		var fresh []browser.CapRequest
 		for {
-			time.Sleep(200 * time.Millisecond)
+			if err := c.sleep(200 * time.Millisecond); err != nil {
+				return pages, rows, err
+			}
 			if isDOM {
 				if domSig() != sigBefore {
 					break
@@ -1068,7 +1164,9 @@ func (c *runCtx) uiPaginate(rep *browser.Replayer, page *rod.Page, rule model.Ca
 				}
 				if ready > 0 {
 					// 同一页可能有多个接口，稍等让它们到齐
-					time.Sleep(400 * time.Millisecond)
+					if err := c.sleep(400 * time.Millisecond); err != nil {
+						return pages, rows, err
+					}
 					break
 				}
 			}
@@ -1275,8 +1373,13 @@ func (c *runCtx) uiStepLogger() func(i int, s model.UIStep, d time.Duration, err
 			st.URL = s.Selector
 		}
 		if err != nil {
-			st.Status = "failed"
-			st.Error = err.Error()
+			if c.ctx.Err() != nil {
+				st.Status = "stopped"
+				st.Error = "用户手动结束"
+			} else {
+				st.Status = "failed"
+				st.Error = err.Error()
+			}
 		}
 		c.saveStep(st)
 	}
@@ -1335,6 +1438,8 @@ func (c *runCtx) watchCaptured(rep *browser.Replayer, rules []model.CaptureConfi
 	for {
 		select {
 		case <-stop:
+			return
+		case <-c.ctx.Done():
 			return
 		case <-t.C:
 			c.flushCaptured(rep.Rec.Requests(), rules, tr, false)
@@ -1505,6 +1610,9 @@ func (c *runCtx) waitCaptured(rep *browser.Replayer, rules []model.CaptureConfig
 	// 已有一条规则命中后再等一会，给其它接口（多接口采集）留出加载时间
 	const grace = 6 * time.Second
 	for time.Now().Before(deadline) {
+		if err := c.ctx.Err(); err != nil {
+			return
+		}
 		reqs := rep.Rec.Requests()
 		matched := 0
 		for _, rule := range rules {
@@ -1516,23 +1624,28 @@ func (c *runCtx) waitCaptured(rep *browser.Replayer, rules []model.CaptureConfig
 			}
 		}
 		if matched >= total {
-			time.Sleep(900 * time.Millisecond) // 等待响应体写完
+			_ = c.sleep(900 * time.Millisecond) // 等待响应体写完
 			return
 		}
 		if matched > 0 && firstHit.IsZero() {
 			firstHit = time.Now()
 		}
 		if !firstHit.IsZero() && time.Since(firstHit) > grace {
-			time.Sleep(400 * time.Millisecond)
+			_ = c.sleep(400 * time.Millisecond)
 			return
 		}
-		time.Sleep(300 * time.Millisecond)
+		if err := c.sleep(300 * time.Millisecond); err != nil {
+			return
+		}
 	}
 }
 
 // ---------- UI + 接口 ----------
 
 func (c *runCtx) runHybrid() error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	loginSteps := c.task.LoginStepList()
 	if len(loginSteps) == 0 {
 		return errors.New("混合模式需要先录制登录 UI 步骤")
@@ -1553,7 +1666,7 @@ func (c *runCtx) runHybrid() error {
 		return err
 	}
 	c.e.bm.ApplyFingerprint(page)
-	rep := browser.NewReplayer(page, c.e.cfg.MaxBodyKB, c.e.log)
+	rep := browser.NewReplayer(page, c.e.cfg.MaxBodyKB, c.e.log).WithContext(c.ctx)
 	rep.OnStep = c.uiStepLogger()
 	rep.OnStepStart = c.uiStepStarter()
 	rep.Rec.OnRequest = func(r browser.CapRequest) { c.reserveReqSeq(r.ID) }
@@ -1570,13 +1683,18 @@ func (c *runCtx) runHybrid() error {
 		c.watchCaptured(rep, nil, tracker, stopWatch)
 	}()
 	loginErr := rep.Run(loginSteps)
-	time.Sleep(1500 * time.Millisecond)
+	if c.ctx.Err() == nil {
+		_ = c.sleep(1500 * time.Millisecond)
+	}
 	harvest, cookies, _ := browser.Harvest(page)
 	close(stopWatch)
 	wg.Wait()
 	rep.Stop()
 	c.flushCaptured(rep.Rec.Requests(), nil, tracker, true)
 	cleanup()
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	if loginErr != nil {
 		return fmt.Errorf("登录流程失败: %w", loginErr)
 	}

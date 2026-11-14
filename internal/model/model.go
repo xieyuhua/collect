@@ -91,7 +91,7 @@ type CaptureConfig struct {
 
 // Pagination 分页配置
 type Pagination struct {
-	Enabled       bool   `json:"enabled"`
+	Enabled bool `json:"enabled"`
 	// Mode 翻页方式：http=复用捕获接口逐页请求（默认，兼容旧配置）；ui=真实点击「下一页」按钮翻页
 	// 纯 UI 模式建议用 ui，风控严格的站点几乎等同于真人操作
 	Mode          string `json:"mode,omitempty"`
@@ -149,33 +149,33 @@ type DedupeConfig struct {
 }
 
 type Task struct {
-	ID           uint       `gorm:"primarykey" json:"id"`
-	Name         string     `json:"name"`
-	Mode         string     `json:"mode"` // api|ui|hybrid
-	Remark       string     `json:"remark"`
-	Enabled      bool       `json:"enabled"`
-	Notify       bool       `json:"notify"`
-	NotifyOn     string     `json:"notify_on"` // failure|always|success
-	ScheduleType string     `json:"schedule_type"`
-	CronExpr     string     `json:"cron"`
-	IntervalSec  int        `json:"interval_sec"`
-	TimeoutSec   int        `json:"timeout_sec"`
+	ID           uint   `gorm:"primarykey" json:"id"`
+	Name         string `json:"name"`
+	Mode         string `json:"mode"` // api|ui|hybrid
+	Remark       string `json:"remark"`
+	Enabled      bool   `json:"enabled"`
+	Notify       bool   `json:"notify"`
+	NotifyOn     string `json:"notify_on"` // failure|always|success
+	ScheduleType string `json:"schedule_type"`
+	CronExpr     string `json:"cron"`
+	IntervalSec  int    `json:"interval_sec"`
+	TimeoutSec   int    `json:"timeout_sec"`
 	// SessionMode 任务级会话模式：空=跟随系统设置，isolated=每次全新无痕，shared=复用共享会话
-	SessionMode  string     `json:"session_mode"`
-	Vars         string     `gorm:"type:text" json:"-"`
-	HTTPSteps    string     `gorm:"type:text" json:"-"`
-	UISteps      string     `gorm:"type:text" json:"-"`
-	LoginSteps   string     `gorm:"type:text" json:"-"`
-	Capture      string     `gorm:"type:text" json:"-"`
-	Pagination   string     `gorm:"type:text" json:"-"`
-	Mapping      string     `gorm:"type:text" json:"-"`
-	Sink         string     `gorm:"type:text" json:"-"`
-	Dedupe       string     `gorm:"type:text" json:"-"`
-	LastRunAt    *time.Time `json:"last_run_at"`
-	LastStatus   string     `json:"last_status"`
-	LastMessage  string     `gorm:"type:text" json:"last_message"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	SessionMode string     `json:"session_mode"`
+	Vars        string     `gorm:"type:text" json:"-"`
+	HTTPSteps   string     `gorm:"type:text" json:"-"`
+	UISteps     string     `gorm:"type:text" json:"-"`
+	LoginSteps  string     `gorm:"type:text" json:"-"`
+	Capture     string     `gorm:"type:text" json:"-"`
+	Pagination  string     `gorm:"type:text" json:"-"`
+	Mapping     string     `gorm:"type:text" json:"-"`
+	Sink        string     `gorm:"type:text" json:"-"`
+	Dedupe      string     `gorm:"type:text" json:"-"`
+	LastRunAt   *time.Time `json:"last_run_at"`
+	LastStatus  string     `json:"last_status"`
+	LastMessage string     `gorm:"type:text" json:"last_message"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 func (t *Task) VarsList() []KV { var v []KV; _ = json.Unmarshal([]byte(t.Vars), &v); return v }
@@ -295,7 +295,7 @@ func (t *Task) ToMap() map[string]any {
 		"notify": t.Notify, "notify_on": t.NotifyOn, "schedule_type": t.ScheduleType,
 		"cron": t.CronExpr, "interval_sec": t.IntervalSec, "timeout_sec": t.TimeoutSec,
 		"session_mode": t.SessionMode,
-		"vars": vars, "http_steps": steps, "ui_steps": ui, "login_steps": login,
+		"vars":         vars, "http_steps": steps, "ui_steps": ui, "login_steps": login,
 		"capture": cap, "pagination": pg, "mapping": mapping, "sink": sink, "dedupe": dedupe,
 		"last_run_at": t.LastRunAt, "last_status": t.LastStatus, "last_message": t.LastMessage,
 		"created_at": t.CreatedAt, "updated_at": t.UpdatedAt,
@@ -308,7 +308,7 @@ type RunLog struct {
 	TaskName   string     `json:"task_name"`
 	Mode       string     `json:"mode"`
 	Trigger    string     `json:"trigger"` // manual|cron
-	Status     string     `json:"status"`  // running|success|failed|partial
+	Status     string     `json:"status"`  // running|success|failed|partial|stopped
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at"`
 	DurationMs int64      `json:"duration_ms"`

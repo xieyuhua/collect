@@ -15,7 +15,10 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-var settingKeys = []string{"wecom_enabled", "wecom_webhook", "notify_on_failure", "notify_on_success", "max_body_kb"}
+var settingKeys = []string{
+	"wecom_enabled", "wecom_webhook", "notify_on_failure", "notify_on_success", "max_body_kb",
+	"record_run_request", "record_run_response", "record_log_request", "record_log_response",
+}
 
 func (s *Server) getSettings(c *gin.Context) {
 	out := map[string]string{}
@@ -344,7 +347,7 @@ func (s *Server) dashboard(c *gin.Context) {
 	s.DB.Model(&model.RunLog{}).Where("started_at >= ?", startOfDay).Count(&runToday)
 
 	var totalRuns, successRuns int64
-	s.DB.Model(&model.RunLog{}).Where("status <> ?", "running").Count(&totalRuns)
+	s.DB.Model(&model.RunLog{}).Where("status NOT IN ?", []string{"running", "stopped"}).Count(&totalRuns)
 	s.DB.Model(&model.RunLog{}).Where("status = ?", "success").Count(&successRuns)
 	rate := 0.0
 	if totalRuns > 0 {

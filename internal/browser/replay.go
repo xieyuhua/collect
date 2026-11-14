@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,14 +54,15 @@ func tryEvalLock(page *rod.Page, wait time.Duration) *sync.Mutex {
 
 // Replayer 回放录制到的页面动作
 type Replayer struct {
-	Page     *rod.Page
-	Rec      *Recorder
-	Log      *applog.Logger
-	Timeout  time.Duration
-	OnStep   func(i int, s model.UIStep, d time.Duration, err error)
+	Page    *rod.Page
+	Rec     *Recorder
+	Log     *applog.Logger
+	Context context.Context
+	Timeout time.Duration
+	OnStep  func(i int, s model.UIStep, d time.Duration, err error)
 	// OnStepStart 在每一步动作开始执行前回调，用于按真实开始时间分配日志序号
 	OnStepStart func(i int, s model.UIStep)
-	Headless bool
+	Headless    bool
 	// autoFrames 记录已经提示过的「自动识别 iframe」，避免每一步重复写日志
 	autoFrames map[string]bool
 	// lastAutoFrame 当前步骤自动识别到的 iframe（用于点击兜底时不误用顶层坐标）
@@ -80,12 +82,24 @@ func NewReplayer(page *rod.Page, maxBodyKB int, log *applog.Logger) *Replayer {
 	}
 }
 
+// WithContext makes all browser operations interruptible when a run is stopped.
+func (r *Replayer) WithContext(ctx context.Context) *Replayer {
+	r.Context = ctx
+	if ctx != nil {
+		r.Page = r.Page.Context(ctx)
+	}
+	return r
+}
+
 func (r *Replayer) Start() error { return r.Rec.Start() }
 func (r *Replayer) Stop()        { r.Rec.Stop() }
 
 func (r *Replayer) Run(steps []model.UIStep) error {
 	var lastErr error
 	for i, s := range steps {
+		if r.Context != nil && r.Context.Err() != nil {
+			return r.Context.Err()
+		}
 		start := time.Now()
 		if r.OnStepStart != nil {
 			r.OnStepStart(i+1, s)
@@ -102,6 +116,9 @@ func (r *Replayer) Run(steps []model.UIStep) error {
 			// 打开/等待类失败允许继续，其余失败中止
 			if s.Action == "click" || s.Action == "input" || s.Action == "select" || s.Action == "open" {
 				return lastErr
+			}
+			if r.Context != nil && r.Context.Err() != nil {
+				return r.Context.Err()
 			}
 		}
 	}
@@ -280,8 +297,7 @@ func (r *Replayer) Do(s model.UIStep) error {
 		if ms <= 0 {
 			ms = 1000
 		}
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		return nil
+		return sleepContext(p.GetContext(), time.Duration(ms)*time.Millisecond)
 	case "wait_for":
 		_, err := r.element(p, s.Selector, s)
 		return err
@@ -297,6 +313,20 @@ func (r *Replayer) Do(s model.UIStep) error {
 		return err
 	default:
 		return fmt.Errorf("未知动作: %s", s.Action)
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -378,7 +408,7 @@ func (r *Replayer) element(p *rod.Page, sel string, s model.UIStep) (*rod.Elemen
 		}
 	}
 	if s.Text != "" {
-		if el3, err3 := p.Timeout(5 * time.Second).ElementR("button|a|span|div|li|label", regexQuote(s.Text)); err3 == nil {
+		if el3, err3 := p.Timeout(5*time.Second).ElementR("button|a|span|div|li|label", regexQuote(s.Text)); err3 == nil {
 			return el3, nil
 		}
 		if strings.TrimSpace(s.Frame) == "" {
@@ -708,7 +738,7 @@ func (r *Replayer) clickNextByText(p *rod.Page, text string) (bool, error) {
 	if res == nil || !res.Value.Bool() {
 		return false, nil
 	}
-	el, err := p.Timeout(5*time.Second).Element(`[data-collect-next="1"]`)
+	el, err := p.Timeout(5 * time.Second).Element(`[data-collect-next="1"]`)
 	if err != nil {
 		return false, nil
 	}

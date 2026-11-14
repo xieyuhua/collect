@@ -54,6 +54,27 @@ func (s *Server) getRun(c *gin.Context) {
 	ok(c, gin.H{"run": run, "task": task.ToMap()})
 }
 
+func (s *Server) stopRun(c *gin.Context) {
+	id, okID := idParam(c)
+	if !okID {
+		return
+	}
+	var run model.RunLog
+	if err := s.DB.First(&run, id).Error; err != nil {
+		failMsg(c, "运行记录不存在")
+		return
+	}
+	if run.Status != "running" {
+		failMsg(c, "该运行已经结束，无需再次停止")
+		return
+	}
+	if s.Engine == nil || !s.Engine.Stop(run.ID) {
+		failMsg(c, "未找到该运行的活跃执行进程，可能已经结束或服务曾经重启")
+		return
+	}
+	okMsg(c, "已发送结束信号，任务正在停止", gin.H{"run_id": run.ID})
+}
+
 func (s *Server) runSteps(c *gin.Context) {
 	id, okID := idParam(c)
 	if !okID {

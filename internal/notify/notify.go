@@ -84,12 +84,18 @@ func (n *Notifier) NotifyRun(task *model.Task, run *model.RunLog) {
 		level = "error"
 	} else if run.Status == "partial" {
 		level = "error"
+	} else if run.Status == "stopped" {
+		level = "info"
 	}
 	icon := "✅"
 	if level == "error" {
 		icon = "❌"
+	} else if level == "info" {
+		icon = "⏹"
 	}
-	title := fmt.Sprintf("%s 采集%s", task.Name, map[string]string{"success": "成功", "failed": "失败", "partial": "部分成功"}[run.Status])
+	title := fmt.Sprintf("%s 采集%s", task.Name, map[string]string{
+		"success": "成功", "failed": "失败", "partial": "部分成功", "stopped": "已手动结束",
+	}[run.Status])
 	content := fmt.Sprintf("%s **%s**\n> 模式: %s\n> 触发: %s\n> 耗时: %.1fs\n> 页数: %d / 抓取: %d / 新增: %d / 重复: %d",
 		icon, title, modeName(task.Mode), triggerName(run.Trigger), float64(run.DurationMs)/1000.0,
 		run.Pages, run.Fetched, run.Inserted, run.Duplicated)
@@ -117,7 +123,7 @@ func (n *Notifier) NotifyRun(task *model.Task, run *model.RunLog) {
 	case "success":
 		should = run.Status == "success"
 	default:
-		should = run.Status != "success"
+		should = run.Status == "failed" || run.Status == "partial"
 	}
 	if !should || !n.Enabled() {
 		if should && n.Log != nil {

@@ -46,11 +46,15 @@ func Open() (*gorm.DB, error) {
 
 func seed(db *gorm.DB) {
 	defaults := map[string]string{
-		"wecom_enabled":     "false",
-		"wecom_webhook":     "",
-		"notify_on_failure": "true",
-		"notify_on_success": "false",
-		"max_body_kb":       "256",
+		"wecom_enabled":       "false",
+		"wecom_webhook":       "",
+		"notify_on_failure":   "true",
+		"notify_on_success":   "false",
+		"max_body_kb":         "256",
+		"record_run_request":  "true",
+		"record_run_response": "true",
+		"record_log_request":  "false",
+		"record_log_response": "false",
 	}
 	for k, v := range defaults {
 		var s model.Setting

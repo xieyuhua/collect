@@ -15,7 +15,7 @@
     <div v-if="step.kind === 'sink'">
       <div class="kv-list">
         <span class="k">状态</span>
-        <span><span class="tag" :class="step.status === 'failed' ? 'red' : (step.status === 'warn' ? 'amber' : 'green')">{{ step.status === 'failed' ? '失败' : (step.status === 'warn' ? '无新数据' : '成功') }}</span></span>
+        <span><span class="tag" :class="step.status === 'failed' ? 'red' : (step.status === 'stopped' ? 'gray' : (step.status === 'warn' ? 'amber' : 'green'))">{{ step.status === 'failed' ? '失败' : (step.status === 'stopped' ? '已停止' : (step.status === 'warn' ? '无新数据' : '成功')) }}</span></span>
         <span class="k">耗时</span><span>{{ fmtDur(step.duration_ms) }}</span>
         <template v-if="step.error">
           <span class="k">错误</span><span style="color:#c43239">{{ step.error }}</span>
@@ -52,6 +52,7 @@
       const sel = C.ref([]);
       const keepN = C.ref(20);
       const deleting = C.ref(false);
+      const stopping = C.reactive({});
 
       async function loadOptions() {
         try {
@@ -158,7 +159,35 @@
       }
 
       function statusText(v) {
-        return ({ running: '运行中', success: '成功', failed: '失败', partial: '部分成功' })[v] || v;
+        return ({ running: '运行中', success: '成功', failed: '失败', partial: '部分成功', stopped: '已停止' })[v] || v;
+      }
+
+      function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      }
+
+      async function stopRun(r) {
+        if (stopping[r.id]) return;
+        if (!confirm('确定手动结束运行 #' + r.id + ' 吗？\n\n当前步骤会被取消，已经抓取并落库的数据会保留。')) return;
+        stopping[r.id] = true;
+        try {
+          await C.api('/runs/' + r.id + '/stop', { method: 'POST', body: {} });
+          C.toast('已发送结束信号，正在等待任务收尾', 'ok');
+          for (let i = 0; i < 60; i++) {
+            await delay(750);
+            const detail = await C.api('/runs/' + r.id);
+            if (detail.run && detail.run.status !== 'running') {
+              C.toast('任务已结束，状态：' + statusText(detail.run.status), 'ok');
+              await load();
+              return;
+            }
+          }
+          C.toast('结束信号已发送，任务仍在收尾，请稍后刷新', 'warn');
+        } catch (e) {
+          C.toast(e.message || String(e), 'err');
+        } finally {
+          delete stopping[r.id];
+        }
       }
 
       return {
@@ -167,6 +196,7 @@
         sel: sel, keepN: keepN, deleting: deleting,
         isSel: isSel, toggle: toggle, allSel: allSel, pageSelectable: pageSelectable, toggleAll: toggleAll,
         delSelected: delSelected, clearFiltered: clearFiltered, keepLatest: keepLatest,
+        stopping: stopping, stopRun: stopRun,
         fmt: C.fmt, fmtDur: C.fmtDur, statusTag: C.statusTag, modeTag: C.modeTag,
       };
     },
@@ -188,6 +218,7 @@
               <option value="success">成功</option>
               <option value="failed">失败</option>
               <option value="partial">部分成功</option>
+              <option value="stopped">已停止</option>
             </select>
             <button class="btn sm" data-act="run-search" @click="filter">筛选</button>
           </div>
@@ -233,8 +264,12 @@
                 <td>
                   <div class="actions">
                     <a class="btn sm" :href="'#/run/' + r.id">详情</a>
+                    <button v-if="r.status === 'running'" class="btn sm danger" data-act="run-stop"
+                            :disabled="!!stopping[r.id]" @click="stopRun(r)">
+                      {{ stopping[r.id] ? '结束中…' : '结束' }}
+                    </button>
                     <button class="btn sm" data-act="run-export" @click="exportRun(r, 'xlsx')">Excel</button>
-                    <button class="btn sm danger" data-act="del-run" @click="delRun(r)">删除</button>
+                    <button class="btn sm danger" data-act="del-run" :disabled="r.status === 'running'" @click="delRun(r)">删除</button>
                   </div>
                 </td>
               </tr>
@@ -332,6 +367,44 @@
       function back() { history.back(); }
 
       const deleting = C.ref(false);
+      const stopping = C.ref(false);
+      let unmounted = false;
+      Vue.onBeforeUnmount(function () { unmounted = true; });
+
+      function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      }
+
+      async function stopRun() {
+        if (stopping.value || run.status !== 'running') return;
+        if (!confirm('确定手动结束本次运行吗？\n\n当前步骤会被取消，已经抓取并落库的数据会保留。')) return;
+        stopping.value = true;
+        try {
+          await C.api('/runs/' + route.id + '/stop', { method: 'POST', body: {} });
+          C.toast('已发送结束信号，正在等待任务收尾', 'ok');
+          for (let i = 0; i < 60 && !unmounted; i++) {
+            await delay(750);
+            if (unmounted) return;
+            const detail = await C.api('/runs/' + route.id);
+            Object.assign(run, detail.run || {});
+            if (run.status !== 'running') {
+              await load();
+              C.toast('任务已结束，状态：' + statusText(run.status), 'ok');
+              return;
+            }
+          }
+          if (!unmounted) C.toast('结束信号已发送，任务仍在收尾，请稍后刷新', 'warn');
+        } catch (e) {
+          C.toast(e.message || String(e), 'err');
+        } finally {
+          stopping.value = false;
+        }
+      }
+
+      function statusText(v) {
+        return ({ running: '运行中', success: '成功', failed: '失败', partial: '部分成功', stopped: '已停止' })[v] || v;
+      }
+
       async function delRun() {
         if (!confirm('确定删除这条运行记录吗？\n\n步骤日志、采集数据集和导出文件会一并删除，且不可恢复。')) return;
         deleting.value = true;
@@ -361,7 +434,7 @@
         detailTab: detailTab, stepsNewest: stepsNewest,
         changeDataPage: changeDataPage, exportRun: exportRun, exportAll: exportAll,
         pickSource: pickSource, showStep: showStep, back: back,
-        deleting: deleting, delRun: delRun,
+        deleting: deleting, stopping: stopping, stopRun: stopRun, delRun: delRun,
         cellText: cellText, cellTitle: cellTitle,
         fmt: C.fmt, fmtDur: C.fmtDur, statusTag: C.statusTag, modeTag: C.modeTag,
         stepKindTag: C.stepKindTag, shortUrl: C.shortUrl,
@@ -380,6 +453,10 @@
         </div>
         <div class="row">
           <button class="btn" @click="back">返回</button>
+          <button v-if="run.status === 'running'" class="btn danger" data-act="run-stop"
+                  :disabled="stopping" @click="stopRun">
+            {{ stopping ? '正在结束…' : '结束运行' }}
+          </button>
           <button class="btn danger" data-act="run-del" :disabled="deleting || run.status === 'running'" @click="delRun">删除记录</button>
           <button class="btn" data-act="run-export" @click="exportAll('csv')">导出全部 CSV</button>
           <button class="btn primary" data-act="run-export" @click="exportAll('xlsx')">导出全部 Excel</button>
@@ -431,6 +508,7 @@
                   <td>
                     <span v-if="s.error" class="tag red">{{ String(s.error).slice(0, 40) }}</span>
                     <span v-else-if="s.status === 'failed'" class="tag red">失败</span>
+                    <span v-else-if="s.status === 'stopped'" class="tag gray">已停止</span>
                     <span v-else-if="s.status === 'warn'" class="tag amber">无新数据</span>
                     <span v-else class="tag green">OK</span>
                   </td>

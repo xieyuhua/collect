@@ -108,6 +108,7 @@ window.Collect = (function () {
     success: ['green', '成功'],
     failed: ['red', '失败'],
     partial: ['amber', '部分成功'],
+    stopped: ['gray', '已停止'],
   };
   const MODE = {
     api: ['blue', '纯接口'],

@@ -50,6 +50,7 @@ func (s *Server) Router() *gin.Engine {
 		runs.GET("", s.listRuns)
 		runs.POST("/batch-delete", s.deleteRunsBatch)
 		runs.GET("/:id", s.getRun)
+		runs.POST("/:id/stop", s.stopRun)
 		runs.DELETE("/:id", s.deleteRun)
 		runs.GET("/:id/steps", s.runSteps)
 		runs.GET("/:id/sources", s.runSources)
@@ -124,26 +125,26 @@ func (s *Server) Router() *gin.Engine {
 				c.JSON(http.StatusNotFound, gin.H{"code": 1, "msg": "接口不存在"})
 				return
 			}
-				if p == "/" || p == "" || p == "/index.html" {
-					// 直接输出 index.html：交给 http.FileServer 会因为 /index.html -> ./ 重定向造成死循环
-					data, err := fs.ReadFile(sub, "index.html")
-					if err != nil {
-						c.String(http.StatusInternalServerError, "index.html 缺失")
-						return
-					}
-					c.Header("Cache-Control", "no-cache, must-revalidate")
-					c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+			if p == "/" || p == "" || p == "/index.html" {
+				// 直接输出 index.html：交给 http.FileServer 会因为 /index.html -> ./ 重定向造成死循环
+				data, err := fs.ReadFile(sub, "index.html")
+				if err != nil {
+					c.String(http.StatusInternalServerError, "index.html 缺失")
 					return
 				}
-				// 内嵌资源没有修改时间，浏览器可能一直用旧缓存（升级后看不到新页面）。
-				// 页面与自己的 js/css 每次校验；第三方库（vendor）可以长期缓存。
-				if strings.HasPrefix(p, "/vendor/") {
-					c.Header("Cache-Control", "public, max-age=604800")
-				} else {
-					c.Header("Cache-Control", "no-cache, must-revalidate")
-				}
-				fileServer.ServeHTTP(c.Writer, c.Request)
-			})
-		}
+				c.Header("Cache-Control", "no-cache, must-revalidate")
+				c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+				return
+			}
+			// 内嵌资源没有修改时间，浏览器可能一直用旧缓存（升级后看不到新页面）。
+			// 页面与自己的 js/css 每次校验；第三方库（vendor）可以长期缓存。
+			if strings.HasPrefix(p, "/vendor/") {
+				c.Header("Cache-Control", "public, max-age=604800")
+			} else {
+				c.Header("Cache-Control", "no-cache, must-revalidate")
+			}
+			fileServer.ServeHTTP(c.Writer, c.Request)
+		})
+	}
 	return r
 }

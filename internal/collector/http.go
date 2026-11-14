@@ -28,15 +28,16 @@ func defaultUserAgent() string {
 }
 
 type HTTPResult struct {
-	Status   int
-	Headers  map[string]string
-	Body     []byte
-	Text     string
-	JSON     any
-	Duration time.Duration
-	Size     int
-	ReqURL   string
-	ReqBody  string
+	Status     int
+	Headers    map[string]string
+	Body       []byte
+	Text       string
+	JSON       any
+	Duration   time.Duration
+	Size       int
+	ReqURL     string
+	ReqBody    string
+	ReqHeaders map[string]string
 }
 
 type Executor struct {
@@ -77,6 +78,10 @@ func NewExecutorWithJar(timeout time.Duration, proxy string, insecure bool, jar 
 func (x *Executor) Jar() http.CookieJar { return x.jar }
 
 func (x *Executor) Do(method, rawURL string, headers []model.KV, body, contentType string) (*HTTPResult, error) {
+	return x.DoContext(context.Background(), method, rawURL, headers, body, contentType)
+}
+
+func (x *Executor) DoContext(ctx context.Context, method, rawURL string, headers []model.KV, body, contentType string) (*HTTPResult, error) {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
 		method = "GET"
@@ -85,7 +90,7 @@ func (x *Executor) Do(method, rawURL string, headers []model.KV, body, contentTy
 	if body != "" {
 		rdr = bytes.NewBufferString(body)
 	}
-	req, err := http.NewRequest(method, rawURL, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, rdr)
 	if err != nil {
 		return nil, fmt.Errorf("构造请求失败: %w", err)
 	}
@@ -109,20 +114,25 @@ func (x *Executor) Do(method, rawURL string, headers []model.KV, body, contentTy
 	if contentType != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	res := &HTTPResult{
+		ReqURL: rawURL, ReqBody: body, ReqHeaders: headerStringMap(req.Header),
+	}
 	start := time.Now()
 	resp, err := x.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
+		return res, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return res, fmt.Errorf("读取响应失败: %w", err)
 	}
-	res := &HTTPResult{
-		Status: resp.StatusCode, Headers: map[string]string{}, Body: raw, Text: string(raw),
-		Duration: time.Since(start), Size: len(raw), ReqURL: rawURL, ReqBody: body,
-	}
+	res.Status = resp.StatusCode
+	res.Headers = map[string]string{}
+	res.Body = raw
+	res.Text = string(raw)
+	res.Duration = time.Since(start)
+	res.Size = len(raw)
 	for k, vals := range resp.Header {
 		res.Headers[k] = strings.Join(vals, "; ")
 	}
@@ -137,6 +147,14 @@ func (x *Executor) Do(method, rawURL string, headers []model.KV, body, contentTy
 		return res, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateText(res.Text, 300))
 	}
 	return res, nil
+}
+
+func headerStringMap(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vals := range h {
+		out[k] = strings.Join(vals, "; ")
+	}
+	return out
 }
 
 func looksJSON(b []byte) bool {
