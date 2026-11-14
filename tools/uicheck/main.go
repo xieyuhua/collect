@@ -601,6 +601,38 @@ func main() {
 		}
 	}
 
+	// 运行记录列表：批量删除
+	_, _ = page.Timeout(10*time.Second).Eval(`() => { location.hash = '#/runs'; return true }`)
+	time.Sleep(1500 * time.Millisecond)
+	runRows := evalInt(page, `() => document.querySelectorAll('.tbl tbody tr').length`)
+	if runRows > 0 {
+		check("运行记录含勾选列", evalBool(page, `() => !!document.querySelector('[data-act="runs-sel-all"]')`), "缺少全选勾选框")
+		check("运行记录含批量删除按钮", evalBool(page, `() => !!document.querySelector('[data-act="runs-batch-del"]')`), "缺少批量删除按钮")
+		check("运行记录含保留最近 N 条清理", evalBool(page, `() => !!document.querySelector('[data-act="runs-keep-n"]') && !!document.querySelector('[data-act="runs-keep-latest"]')`), "缺少保留条数清理入口")
+		check("运行记录含清空筛选结果", evalBool(page, `() => !!document.querySelector('[data-act="runs-clear-filtered"]')`), "缺少清空筛选结果按钮")
+		check("未勾选时批量删除不可用", evalBool(page, `() => { const b = document.querySelector('[data-act="runs-batch-del"]'); return !!b && b.disabled; }`), "按钮未禁用")
+		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+			const boxes = Array.prototype.filter.call(document.querySelectorAll('.tbl tbody tr input[type=checkbox]'), x => !x.disabled);
+			if (!boxes.length) return false;
+			boxes[0].click();
+			return true;
+		}`)
+		time.Sleep(400 * time.Millisecond)
+		check("勾选一条后可批量删除", evalBool(page, `() => {
+			const b = document.querySelector('[data-act="runs-batch-del"]');
+			return !!b && !b.disabled;
+		}`), "按钮仍禁用")
+		check("显示已选数量", evalBool(page, `() => (document.body.innerText || '').indexOf('已选 1 条') >= 0`), "未显示已选数量")
+		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+			const boxes = Array.prototype.filter.call(document.querySelectorAll('.tbl tbody tr input[type=checkbox]'), x => !x.disabled);
+			if (boxes.length) boxes[0].click();
+			return true;
+		}`)
+		time.Sleep(300 * time.Millisecond)
+	} else {
+		fmt.Println("  [skip] 运行记录批量删除（没有运行记录）")
+	}
+
 	// 运行详情：按数据来源分组预览（有多个来源的运行记录才检查）
 	runID := ""
 	if res, err := page.Timeout(10*time.Second).Eval(`async () => {
@@ -629,6 +661,7 @@ func main() {
 			const b = document.querySelector('[data-source]');
 			return !!b && b.classList.contains('primary');
 		}`), "首个来源未高亮")
+		check("运行详情含删除记录按钮", evalBool(page, `() => !!document.querySelector('[data-act="run-del"]')`), "缺少删除记录按钮")
 	} else {
 		fmt.Println("  [skip] 运行详情来源分组（没有多来源的运行记录）")
 	}

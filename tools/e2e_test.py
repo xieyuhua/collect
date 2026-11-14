@@ -1130,12 +1130,70 @@ def test_session_shared(site):
         call("PUT", "/api/browser/config", {"session_mode": orig_mode or "isolated", "profile_dir": orig_dir})
 
 
+def test_runs_batch_delete(site):
+    """运行记录的批量删除：按 id 删除 / 仅保留最近 N 条 / 清空筛选结果，
+    并确认步骤日志与数据集行一起被清理。"""
+    print("\n== 14. 运行记录批量删除 ==")
+    t = create_task({
+        "name": "E2E-批量删除运行记录", "mode": "api", "enabled": True,
+        "http_steps": [{
+            "name": "门店列表", "method": "GET", "url": site + "/api/stores",
+            "capture": True, "records_path": "data.list",
+        }],
+        "capture": {"mode": "network", "url_contains": "/api/stores"},
+        "mapping": mapping_common(),
+        "dedupe": {"enabled": False, "keys": ["id"]},
+        "sink": {"type": "none"},
+    })
+    try:
+        ids = [run_task(t["id"])["id"] for _ in range(3)]
+
+        def runs_of_task():
+            return call("GET", "/api/runs?task_id=%d&page_size=100" % t["id"])["data"]
+
+        total = runs_of_task()["total"]
+        check("准备 3 条运行记录", total == 3, total)
+
+        r = call("POST", "/api/runs/batch-delete", {"ids": ids[:2]})
+        check("按 id 批量删除成功", r.get("code") == 0, r.get("msg"))
+        check("按 id 删除 2 条", (r.get("data") or {}).get("deleted") == 2, r.get("data"))
+        after = runs_of_task()
+        check("列表只剩 1 条", after["total"] == 1, after["total"])
+        gone = call("GET", "/api/runs/%d" % ids[0])
+        check("被删除的记录查不到了", gone.get("code") != 0, gone)
+        dd = call("GET", "/api/runs/%d/data" % ids[0]).get("data") or {}
+        check("被删除记录的数据集也清空", dd.get("total") == 0, dd.get("total"))
+        steps_left = call("GET", "/api/runs/%d/steps" % ids[0])
+        steps_left = steps_left if isinstance(steps_left, list) else steps_left.get("data") or []
+        check("被删除记录的步骤日志也清空", len(steps_left) == 0, len(steps_left))
+
+        for _ in range(2):
+            run_task(t["id"])
+        check("再跑 2 次后共 3 条", runs_of_task()["total"] == 3, runs_of_task()["total"])
+        latest = max(x["id"] for x in runs_of_task()["list"])
+
+        r = call("POST", "/api/runs/batch-delete", {"task_id": t["id"], "keep": 1})
+        check("仅保留最近 1 条", (r.get("data") or {}).get("deleted") == 2, r.get("data"))
+        left = runs_of_task()
+        check("保留的正好是最新那条", left["total"] == 1 and left["list"][0]["id"] == latest,
+              [x["id"] for x in left["list"]])
+
+        r = call("POST", "/api/runs/batch-delete", {"task_id": t["id"], "all": True})
+        check("清空筛选结果", (r.get("data") or {}).get("deleted") == 1, r.get("data"))
+        check("清空后没有记录", runs_of_task()["total"] == 0, runs_of_task()["total"])
+
+        r = call("POST", "/api/runs/batch-delete", {})
+        check("空参数被拒绝", r.get("code") != 0, r.get("msg"))
+    finally:
+        call("DELETE", "/api/tasks/%d" % t["id"])
+
+
 def main():
     global BASE, SITE
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=BASE)
     ap.add_argument("--site", default=SITE)
-    ap.add_argument("--only", default="", help="api|hybrid|ui|scheduler|import|sqlsink|jobs|cfg|uipg|uipgt|uiframe|studio|studioiframe|spaopen|shared")
+    ap.add_argument("--only", default="", help="api|hybrid|ui|scheduler|import|sqlsink|jobs|cfg|uipg|uipgt|uiframe|studio|studioiframe|spaopen|shared|runbatch")
     args = ap.parse_args()
     BASE, SITE = args.base.rstrip("/"), args.site.rstrip("/")
     only = args.only
@@ -1169,6 +1227,8 @@ def main():
         test_open_keeps_session(SITE)
     if not only or only == "shared":
         test_session_shared(SITE)
+    if not only or only == "runbatch":
+        test_runs_batch_delete(SITE)
     if not only or only == "scheduler":
         test_scheduler(SITE)
     if not only or only == "sqlsink":

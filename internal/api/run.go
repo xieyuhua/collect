@@ -304,9 +304,9 @@ func (s *Server) purgeRuns(runs []model.RunLog) int {
 // deleteRunsBatch 批量删除运行记录。
 //
 // 三种用法（按优先级）：
-//   1. ids 非空：精确删除这些运行记录
-//   2. all=true：删除当前筛选条件（task_id/status/trigger）下的全部记录
-//   3. keep=N：在当前筛选条件下只保留最近 N 条
+//  1. ids 非空：精确删除这些运行记录
+//  2. all=true：删除当前筛选条件（task_id/status/trigger）下的全部记录
+//  3. keep=N：在当前筛选条件下只保留最近 N 条
 //
 // 运行中（running）的记录一律跳过。
 func (s *Server) deleteRunsBatch(c *gin.Context) {
