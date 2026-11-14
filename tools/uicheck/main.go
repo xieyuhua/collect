@@ -108,7 +108,7 @@ func main() {
 
 	// 弹窗初始状态 / 关闭按钮回归
 	modalVisible := func() bool {
-		res, err := page.Timeout(5*time.Second).Eval(`() => {
+		res, err := page.Timeout(5 * time.Second).Eval(`() => {
 			const m = document.getElementById('modalMask');
 			if (!m) return false;
 			const cs = getComputedStyle(m);
@@ -120,20 +120,20 @@ func main() {
 		return res.Value.Bool()
 	}
 	check("初始不弹窗", !modalVisible(), "首屏 modal 遮罩可见（hidden 失效）")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
 	time.Sleep(200 * time.Millisecond)
 	check("openModal 可弹出", modalVisible(), "openModal 后遮罩不可见")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { document.querySelector('[data-act="modal-close"]').click(); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { document.querySelector('[data-act="modal-close"]').click(); return true }`)
 	time.Sleep(200 * time.Millisecond)
 	check("点 X 可关闭弹窗", !modalVisible(), "点击关闭按钮后遮罩仍可见")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
 	time.Sleep(200 * time.Millisecond)
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { document.getElementById('modalMask').click(); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { document.getElementById('modalMask').click(); return true }`)
 	time.Sleep(200 * time.Millisecond)
 	check("点遮罩可关闭弹窗", !modalVisible(), "点击遮罩后未关闭")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { openModal('测试', '<div>x</div>'); return true }`)
 	time.Sleep(200 * time.Millisecond)
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { document.querySelector('[data-act="modal-close"]').click(); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { document.querySelector('[data-act="modal-close"]').click(); return true }`)
 	time.Sleep(200 * time.Millisecond)
 
 	routes := []string{"dashboard", "tasks", "studio", "jobs", "jobruns", "runs", "datasources", "logs", "notifications", "settings"}
@@ -144,7 +144,7 @@ func main() {
 			continue
 		}
 		time.Sleep(1200 * time.Millisecond)
-		text, err := page.Timeout(10*time.Second).Eval(`() => {
+		text, err := page.Timeout(10 * time.Second).Eval(`() => {
 			const v = document.getElementById('view');
 			if (!v) return 'NO_VIEW';
 			return v.innerText.trim().slice(0, 120);
@@ -158,11 +158,27 @@ func main() {
 	}
 
 	// 设置页：浏览器指纹（UA / 语言 / 平台）自定义
-	_, _ = page.Timeout(10*time.Second).Eval(`() => { location.hash = '#/settings'; return true }`)
+	_, _ = page.Timeout(10 * time.Second).Eval(`() => { location.hash = '#/settings'; return true }`)
 	time.Sleep(1200 * time.Millisecond)
+	openSettingTab := func(key string) {
+		_, _ = page.Timeout(5*time.Second).Eval(`(tab) => {
+			const b = document.querySelector('[data-act="settings-tab"][data-tab="' + tab + '"]');
+			if (b) b.click();
+			return !!b;
+		}`, key)
+		time.Sleep(250 * time.Millisecond)
+	}
+	check("设置页分为 5 个选项卡", evalInt(page, `() => document.querySelectorAll('[data-act="settings-tab"]').length`) == 5, "选项卡数量不是 5")
+	openSettingTab("runtime")
+	check("运行参数页签默认选中", evalBool(page, `() => {
+		const b = document.querySelector('[data-act="settings-tab"][data-tab="runtime"]');
+		return !!b && b.getAttribute('aria-selected') === 'true' && !!document.getElementById('settings-panel-runtime');
+	}`), "运行参数页签未默认选中")
+
+	openSettingTab("fingerprint")
 	check("设置页含 UA 自定义输入框", evalBool(page, `() => !!document.getElementById('brUA')`), "缺少 User-Agent 输入框")
 	check("设置页含 UA 预设下拉", evalBool(page, `() => !!document.querySelector('[data-act="ua-preset"]')`), "缺少 UA 预设下拉")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => {
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 		const s = document.querySelector('[data-act="ua-preset"]');
 		if (!s) return false;
 		s.value = 'win';
@@ -178,11 +194,12 @@ func main() {
 	check("设置页含指纹保存按钮", evalBool(page, `() => !!document.querySelector('[data-act="fingerprint-save"]')`), "缺少保存指纹配置按钮")
 
 	// 设置页：浏览器会话模式（隔离 / 共享）
+	openSettingTab("browser")
 	check("设置页含会话模式下拉", evalBool(page, `() => !!document.getElementById('brSession')`), "缺少会话模式下拉")
 	check("设置页含共享会话目录", evalBool(page, `() => !!document.getElementById('brProfile')`), "缺少共享会话目录输入")
 	check("设置页含清空会话按钮", evalBool(page, `() => !!document.querySelector('[data-act="browser-session-clear"]')`), "缺少清空共享会话按钮")
 	check("设置页显示会话状态", evalBool(page, `() => !!document.querySelector('[data-act="browser-session-info"]')`), "缺少会话状态说明")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => {
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 		const s = document.getElementById('brSession');
 		if (!s) return false;
 		s.value = 'shared';
@@ -193,13 +210,14 @@ func main() {
 	check("共享会话目录随模式启用", evalBool(page, `() => { const p = document.getElementById('brProfile'); return !!p && !p.disabled; }`), "切换共享模式后目录输入仍禁用")
 
 	// 设置页：运行参数可自定义
+	openSettingTab("runtime")
 	check("设置页含监听地址输入", evalBool(page, `() => !!document.getElementById('cfAddr')`), "缺少监听地址输入框")
 	check("设置页含数据目录输入", evalBool(page, `() => !!document.getElementById('cfDataDir')`), "缺少数据目录输入框")
 	check("设置页含超时输入", evalBool(page, `() => Number((document.getElementById('cfTimeout')||{}).value) > 0`), "缺少单请求超时输入框")
 	check("设置页含代理输入", evalBool(page, `() => !!document.getElementById('cfProxy')`), "缺少接口代理输入框")
 	check("设置页含包体上限输入", evalBool(page, `() => Number((document.getElementById('cfMaxBody')||{}).value) > 0`), "缺少包体上限输入框")
 	check("设置页含运行参数保存按钮", evalBool(page, `() => !!document.querySelector('[data-act="general-save"]')`), "缺少运行参数保存按钮")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => {
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 		const b = document.querySelector('[data-act="general-reset"]');
 		if (!b) return false;
 		b.click();
@@ -208,10 +226,34 @@ func main() {
 	time.Sleep(300 * time.Millisecond)
 	check("恢复默认值按钮生效", evalBool(page, `() => Number((document.getElementById('cfTimeout')||{}).value) === 60`), "点击恢复默认后超时不是 60")
 
+	// 设置页：通知和关于页签
+	openSettingTab("notify")
+	check("通知消息页签显示保存设置", evalBool(page, `() => !!document.querySelector('[data-act="settings-save"]') && !!document.getElementById('setWebhook')`), "通知设置内容未显示")
+	openSettingTab("about")
+	check("关于平台页签显示采集模式说明", evalBool(page, `() => (document.getElementById('settings-panel-about')||{}).innerText.includes('纯接口')`), "关于页签内容未显示")
+	_ = page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{Width: 390, Height: 844, DeviceScaleFactor: 1})
+	time.Sleep(400 * time.Millisecond)
+	openSettingTab("runtime")
+	check("设置页窄屏无页面横向溢出", evalBool(page, `() => document.documentElement.scrollWidth <= window.innerWidth + 1`), "窄屏页面出现横向滚动")
+	check("设置页窄屏页签可横向滚动", evalBool(page, `() => {
+		const tabs = document.querySelector('.settings-tabs-card .tabs');
+		return !!tabs && tabs.scrollWidth > tabs.clientWidth && getComputedStyle(tabs).overflowX === 'auto';
+	}`), "页签未启用横向滚动")
+	check("设置页窄屏表单保持在内容区内", evalBool(page, `() => {
+		const panel = document.getElementById('settings-panel-runtime');
+		const field = document.getElementById('cfAddr');
+		if (!panel || !field) return false;
+		const p = panel.getBoundingClientRect();
+		const f = field.getBoundingClientRect();
+		return p.left >= 0 && p.right <= window.innerWidth + 1 && f.left >= p.left && f.right <= p.right + 1;
+	}`), "窄屏表单超出内容区域")
+	_ = page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{Width: 1560, Height: 1000, DeviceScaleFactor: 1})
+	time.Sleep(300 * time.Millisecond)
+
 	// 任务编辑器：新建 -> 保存
-	_, _ = page.Timeout(10*time.Second).Eval(`() => { location.hash = '#/task/new'; return true }`)
+	_, _ = page.Timeout(10 * time.Second).Eval(`() => { location.hash = '#/task/new'; return true }`)
 	time.Sleep(1500 * time.Millisecond)
-	hasEditor, _ := page.Timeout(5*time.Second).Eval(`() => !!document.querySelector('[data-act="save-task"]')`)
+	hasEditor, _ := page.Timeout(5 * time.Second).Eval(`() => !!document.querySelector('[data-act="save-task"]')`)
 	editorOK := hasEditor != nil && hasEditor.Value.Bool()
 	check("任务编辑器渲染", editorOK, "")
 	if editorOK {
@@ -232,7 +274,7 @@ func main() {
 		tabExists := func(key string) bool {
 			return evalBool(page, `() => !!document.querySelector('[data-act="task-tab"][data-tab="`+key+`"]')`)
 		}
-		origMode, _ := page.Timeout(5*time.Second).Eval(`() => { const s = document.getElementById('tMode'); return s ? s.value : 'api'; }`)
+		origMode, _ := page.Timeout(5 * time.Second).Eval(`() => { const s = document.getElementById('tMode'); return s ? s.value : 'api'; }`)
 		orig := origMode.Value.Str()
 
 		setMode("api")
@@ -254,7 +296,7 @@ func main() {
 		setMode(orig)
 
 		// 任务编辑器：Cron 常用计划
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const s = document.querySelector('[data-act="cron-preset"]');
 			if (!s) return false;
 			s.value = '0 0 9 * * *';
@@ -263,27 +305,27 @@ func main() {
 		}`)
 		time.Sleep(300 * time.Millisecond)
 		check("任务编辑器 Cron 常用计划填入", evalBool(page, `() => { const i = document.getElementById('tCron'); return !!i && i.value === '0 0 9 * * *'; }`), "未填入表达式")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { const i = document.getElementById('tCron'); if (i) { i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); } return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { const i = document.getElementById('tCron'); if (i) { i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); } return true }`)
 		time.Sleep(200 * time.Millisecond)
 
 		// 落库配置：自定义 SQL 面板
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { document.querySelector('[data-act="task-tab"][data-tab="sink"]').click(); return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { document.querySelector('[data-act="task-tab"][data-tab="sink"]').click(); return true }`)
 		time.Sleep(300 * time.Millisecond)
-		hiddenDefault, _ := page.Timeout(5*time.Second).Eval(`() => {
+		hiddenDefault, _ := page.Timeout(5 * time.Second).Eval(`() => {
 			const w = document.getElementById('sinkSqlWrap');
 			const m = document.getElementById('sinkMode');
 			const opt = m ? !!m.querySelector('option[value="sql"]') : false;
 			return (w ? w.hidden : false) && opt;
 		}`)
 		check("落库 SQL 面板默认隐藏且有 sql 选项", hiddenDefault != nil && hiddenDefault.Value.Bool(), "面板未隐藏或缺少 sql 选项")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const m = document.getElementById('sinkMode');
 			m.value = 'sql';
 			m.dispatchEvent(new Event('change', { bubbles: true }));
 			return true;
 		}`)
 		time.Sleep(300 * time.Millisecond)
-		shown, _ := page.Timeout(5*time.Second).Eval(`() => {
+		shown, _ := page.Timeout(5 * time.Second).Eval(`() => {
 			const w = document.getElementById('sinkSqlWrap');
 			const t = document.getElementById('sinkSql');
 			if (!w || !t) return false;
@@ -292,7 +334,7 @@ func main() {
 		}`)
 		check("选择自定义 SQL 后显示模板输入框", shown != nil && shown.Value.Bool(), "SQL 模板框未显示")
 		// 还原为 insert，避免影响后续保存
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const m = document.getElementById('sinkMode');
 			m.value = 'insert';
 			m.dispatchEvent(new Event('change', { bubbles: true }));
@@ -325,7 +367,7 @@ func main() {
 		addCase("mapping", "#mapBox [data-map]", "字段映射", `[data-act="add-map"]`)
 
 		// UI 步骤卡片：非「打开页面」动作应显示「所在 iframe」输入框（iframe 内嵌页面回放用）
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const b = document.querySelector('[data-act="task-tab"][data-tab="ui"]');
 			if (b) b.click();
 			return true;
@@ -360,7 +402,7 @@ func main() {
 			return vals.indexOf('') >= 0 && vals.indexOf('spa') >= 0;
 		}`), "open 动作缺少「打开方式」下拉（整页打开 / 站内跳转）")
 		// 还原成 click，避免影响后面保存
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('[data-ui="ui"]');
 			const last = cards[cards.length - 1];
 			const sel = last && last.querySelector('[data-act="ui-action"]');
@@ -378,7 +420,7 @@ func main() {
 
 		// 步骤卡片支持折叠（点击一次应切换状态）
 		beforeCollapsed := evalBool(page, `() => { const c = document.querySelector('[data-ui="ui"]'); return !!c && c.classList.contains('collapsed'); }`)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const b = document.querySelector('[data-ui="ui"] [data-act="card-toggle"]');
 			if (b) b.click();
 			return true;
@@ -388,7 +430,7 @@ func main() {
 		check("步骤卡片可折叠", beforeCollapsed != afterCollapsed, "折叠状态点击后未切换")
 
 		// 接口步骤：独立分页 = 自定义时应展开分页字段
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const b = document.querySelector('[data-act="task-tab"][data-tab="steps"]');
 			if (b) b.click();
 			return true;
@@ -399,7 +441,7 @@ func main() {
 			const last = steps[steps.length - 1];
 			return last ? last.querySelectorAll('input,select,textarea').length : -1;
 		}`)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const steps = document.querySelectorAll('#stepsBox [data-step]');
 			const last = steps[steps.length - 1];
 			const sel = last && last.querySelector('[data-act="step-page-mode"]');
@@ -421,7 +463,7 @@ func main() {
 			const box = last && last.querySelector('.sink-box');
 			return box ? box.querySelectorAll('input,select,textarea').length : -1;
 		}`)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const steps = document.querySelectorAll('#stepsBox [data-step]');
 			const last = steps[steps.length - 1];
 			const sel = last && last.querySelector('.sink-box [data-act="sink-mode"]');
@@ -437,7 +479,7 @@ func main() {
 		}`)
 		check("接口步骤独立落库展开数据库字段", beforeSink > 0 && afterSink > beforeSink, fmt.Sprintf("切换前 %d 个字段，切换后 %d 个", beforeSink, afterSink))
 		// 还原为继承，避免影响保存
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const steps = document.querySelectorAll('#stepsBox [data-step]');
 			const last = steps[steps.length - 1];
 			const sel = last && last.querySelector('.sink-box [data-act="sink-mode"]');
@@ -449,13 +491,13 @@ func main() {
 
 		// 抓取规则：翻页方式（页面点击翻页 / 接口翻页）
 		setMode("ui")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const b = document.querySelector('[data-act="task-tab"][data-tab="capture"]');
 			if (b) b.click();
 			return true;
 		}`)
 		time.Sleep(250 * time.Millisecond)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const last = cards[cards.length - 1];
 			const cb = last && last.querySelector('[data-act="rule-pagination"]');
@@ -477,7 +519,7 @@ func main() {
 			return !!last && !!last.querySelector('[data-act="rule-pg-text"]') && !!last.querySelector('[data-act="rule-pg-detect"]');
 		}`), "缺少按钮文字输入框或「从录制动作识别」按钮")
 		// 切到「接口翻页」：应出现「一键改成点击翻页」，且点击翻页字段隐藏
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const last = cards[cards.length - 1];
 			const m = last && last.querySelector('[data-act="rule-pg-mode"]');
@@ -492,7 +534,7 @@ func main() {
 			const t = last ? (last.innerText || '') : '';
 			return t.indexOf('分页类型') >= 0 && t.indexOf('加载更多按钮选择器') < 0;
 		}`), "接口翻页与点击翻页字段同时出现")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const b = document.querySelector('#capBox [data-cap] [data-act="rule-pg-to-ui"]');
 			if (b) b.click();
 			return true;
@@ -505,7 +547,7 @@ func main() {
 			const txt = last && last.querySelector('[data-act="rule-pg-text"]');
 			return !!m && m.value === 'ui' && !!txt && ((txt.value || '').length > 0);
 		}`), "切换后未回到页面点击翻页或未填按钮文字")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const last = cards[cards.length - 1];
 			const sel = last && last.querySelector('select');
@@ -530,7 +572,7 @@ func main() {
 			return !!last && !!last.querySelector('[data-act="rule-pg-frame"]');
 		}`), "翻页配置缺少「下一页按钮所在 iframe」输入框")
 		// 还原：切回网络规则并关闭翻页，避免影响后续保存
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const last = cards[cards.length - 1];
 			const sel = last && last.querySelector('select');
@@ -538,7 +580,7 @@ func main() {
 			return true;
 		}`)
 		time.Sleep(300 * time.Millisecond)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const last = cards[cards.length - 1];
 			const cb = last && last.querySelector('[data-act="rule-pagination"]');
@@ -550,7 +592,7 @@ func main() {
 
 		// 多抓取规则：命名后可搜索过滤
 		addCase("capture", `#capBox [data-cap]`, "抓取规则（第二条）", `[data-act="add-rule"]`)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const cards = document.querySelectorAll('#capBox [data-cap]');
 			const names = ['门店列表规则', '订单列表规则'];
 			cards.forEach((c, i) => {
@@ -560,7 +602,7 @@ func main() {
 			return true;
 		}`)
 		time.Sleep(300 * time.Millisecond)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const k = document.getElementById('ruleKw');
 			if (k) { k.value = '门店'; k.dispatchEvent(new Event('input', { bubbles: true })); }
 			return true;
@@ -569,18 +611,18 @@ func main() {
 		visibleRules := evalInt(page, `() => Array.prototype.filter.call(document.querySelectorAll('#capBox [data-cap]'), c => c.offsetParent !== null).length`)
 		totalRules := evalInt(page, `() => document.querySelectorAll('#capBox [data-cap]').length`)
 		check("抓取规则搜索过滤", totalRules >= 2 && visibleRules == 1, fmt.Sprintf("共 %d 条，命中 %d 条", totalRules, visibleRules))
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const k = document.getElementById('ruleKw');
 			if (k) { k.value = ''; k.dispatchEvent(new Event('input', { bubbles: true })); }
 			return true;
 		}`)
 		time.Sleep(200 * time.Millisecond)
 
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { const i = document.querySelector('#tName'); if (i) { i.value = 'UI冒烟测试任务'; i.dispatchEvent(new Event('input', {bubbles:true})); } return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { const i = document.querySelector('#tName'); if (i) { i.value = 'UI冒烟测试任务'; i.dispatchEvent(new Event('input', {bubbles:true})); } return true }`)
 		time.Sleep(300 * time.Millisecond)
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { document.querySelector('[data-act="save-task"]').click(); return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { document.querySelector('[data-act="save-task"]').click(); return true }`)
 		time.Sleep(2500 * time.Millisecond)
-		hash, _ := page.Timeout(5*time.Second).Eval(`() => location.hash`)
+		hash, _ := page.Timeout(5 * time.Second).Eval(`() => location.hash`)
 		h := hash.Value.Str()
 		check("保存任务跳转详情", strings.HasPrefix(h, "#/task/"), h)
 
@@ -589,7 +631,7 @@ func main() {
 			taskID := strings.TrimPrefix(h, "#/task/")
 			_, _ = page.Timeout(10*time.Second).Eval(`(id) => { location.hash = '#/task/' + id; return true }`, taskID)
 			time.Sleep(1800 * time.Millisecond)
-			_, _ = page.Timeout(5*time.Second).Eval(`() => {
+			_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 				const b = document.querySelector('[data-act="task-tab"][data-tab="capture"]');
 				if (b) b.click();
 				return true;
@@ -602,7 +644,7 @@ func main() {
 	}
 
 	// 运行记录列表：批量删除
-	_, _ = page.Timeout(10*time.Second).Eval(`() => { location.hash = '#/runs'; return true }`)
+	_, _ = page.Timeout(10 * time.Second).Eval(`() => { location.hash = '#/runs'; return true }`)
 	time.Sleep(1500 * time.Millisecond)
 	runRows := evalInt(page, `() => document.querySelectorAll('.tbl tbody tr').length`)
 	if runRows > 0 {
@@ -611,7 +653,7 @@ func main() {
 		check("运行记录含保留最近 N 条清理", evalBool(page, `() => !!document.querySelector('[data-act="runs-keep-n"]') && !!document.querySelector('[data-act="runs-keep-latest"]')`), "缺少保留条数清理入口")
 		check("运行记录含清空筛选结果", evalBool(page, `() => !!document.querySelector('[data-act="runs-clear-filtered"]')`), "缺少清空筛选结果按钮")
 		check("未勾选时批量删除不可用", evalBool(page, `() => { const b = document.querySelector('[data-act="runs-batch-del"]'); return !!b && b.disabled; }`), "按钮未禁用")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const boxes = Array.prototype.filter.call(document.querySelectorAll('.tbl tbody tr input[type=checkbox]'), x => !x.disabled);
 			if (!boxes.length) return false;
 			boxes[0].click();
@@ -623,7 +665,7 @@ func main() {
 			return !!b && !b.disabled;
 		}`), "按钮仍禁用")
 		check("显示已选数量", evalBool(page, `() => (document.body.innerText || '').indexOf('已选 1 条') >= 0`), "未显示已选数量")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => {
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 			const boxes = Array.prototype.filter.call(document.querySelectorAll('.tbl tbody tr input[type=checkbox]'), x => !x.disabled);
 			if (boxes.length) boxes[0].click();
 			return true;
@@ -635,7 +677,7 @@ func main() {
 
 	// 运行详情：按数据来源分组预览（有多个来源的运行记录才检查）
 	runID := ""
-	if res, err := page.Timeout(10*time.Second).Eval(`async () => {
+	if res, err := page.Timeout(10 * time.Second).Eval(`async () => {
 		const r = await fetch('/api/runs?page_size=10');
 		const j = await r.json();
 		for (const run of ((j.data && j.data.list) || [])) {
@@ -650,10 +692,10 @@ func main() {
 		_, _ = page.Timeout(10*time.Second).Eval(`(id) => { location.hash = '#/run/' + id; return true }`, runID)
 		time.Sleep(1500 * time.Millisecond)
 		check("运行详情两个大页签", evalBool(page, `() => !!document.querySelector('[data-act="detail-tab-steps"]') && !!document.querySelector('[data-act="detail-tab-data"]')`), "缺少执行步骤/数据集预览页签")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { const b = document.querySelector('[data-act="detail-tab-data"]'); if (b) b.click(); return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { const b = document.querySelector('[data-act="detail-tab-data"]'); if (b) b.click(); return true }`)
 		time.Sleep(400 * time.Millisecond)
 		check("运行详情可切到数据集预览", evalBool(page, `() => { const p = document.querySelector('[data-act="detail-tab-data"]'); return !!p && p.classList.contains('active'); }`), "页签未激活")
-		_, _ = page.Timeout(5*time.Second).Eval(`() => { const b = document.querySelector('[data-act="detail-tab-steps"]'); if (b) b.click(); return true }`)
+		_, _ = page.Timeout(5 * time.Second).Eval(`() => { const b = document.querySelector('[data-act="detail-tab-steps"]'); if (b) b.click(); return true }`)
 		time.Sleep(400 * time.Millisecond)
 		check("执行步骤默认最近在前", evalBool(page, `() => { const i = Array.prototype.find.call(document.querySelectorAll('input[type=checkbox]'), x => (x.parentElement.innerText || '').indexOf('最近的在前') >= 0); return !!i && i.checked; }`), "默认未勾选最近的在前")
 		check("运行详情按来源分组预览", evalBool(page, `() => document.querySelectorAll('[data-source]').length >= 2`), "未渲染数据来源按钮")
@@ -667,22 +709,22 @@ func main() {
 	}
 
 	// 定时作业编辑器
-	_, _ = page.Timeout(10*time.Second).Eval(`() => { location.hash = '#/job/new'; return true }`)
+	_, _ = page.Timeout(10 * time.Second).Eval(`() => { location.hash = '#/job/new'; return true }`)
 	time.Sleep(1500 * time.Millisecond)
 	addBtns := evalInt(page, `() => document.querySelectorAll('[data-act="add-jobstep"]').length`)
 	check("定时作业编辑器渲染", addBtns == 3, fmt.Sprintf("添加按钮 %d 个（应为 3）", addBtns))
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { const b = document.querySelector('[data-act="add-jobstep"][data-kind="http"]'); if (b) b.click(); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { const b = document.querySelector('[data-act="add-jobstep"][data-kind="http"]'); if (b) b.click(); return true }`)
 	time.Sleep(400 * time.Millisecond)
 	stepsAfter := evalInt(page, `() => document.querySelectorAll('[data-jobstep]').length`)
 	check("定时作业可添加 HTTP 步骤", stepsAfter == 1, fmt.Sprintf("步骤数 %d", stepsAfter))
 	check("HTTP 步骤含提取变量配置", evalBool(page, `() => { const c = document.querySelector('[data-jobstep]'); return !!c && (c.innerText || '').indexOf('提取变量') >= 0; }`), "缺少提取变量输入框")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => { const b = document.querySelector('[data-act="add-jobstep"][data-kind="sql"]'); if (b) b.click(); return true }`)
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => { const b = document.querySelector('[data-act="add-jobstep"][data-kind="sql"]'); if (b) b.click(); return true }`)
 	time.Sleep(400 * time.Millisecond)
 	check("定时作业可添加 SQL 步骤", evalInt(page, `() => document.querySelectorAll('[data-jobstep]').length`) == 2, "SQL 步骤未添加")
 	// Cron 常用计划
 	presetCount := evalInt(page, `() => { const s = document.querySelector('[data-act="cron-preset"]'); return s ? s.options.length : -1; }`)
 	check("Cron 提供常用计划", presetCount >= 10, fmt.Sprintf("下拉项 %d 个", presetCount))
-	_, _ = page.Timeout(5*time.Second).Eval(`() => {
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 		const s = document.querySelector('[data-act="cron-preset"]');
 		if (!s) return false;
 		s.value = '0 0 8 * * *';
@@ -691,7 +733,7 @@ func main() {
 	}`)
 	time.Sleep(300 * time.Millisecond)
 	check("选择常用计划自动填入表达式", evalBool(page, `() => { const i = document.querySelector('[data-act="cron-expr"]'); return !!i && i.value === '0 0 8 * * *'; }`), "表达式未填入")
-	_, _ = page.Timeout(5*time.Second).Eval(`() => {
+	_, _ = page.Timeout(5 * time.Second).Eval(`() => {
 		const s = document.querySelector('[data-act="cron-preset"]');
 		if (!s) return false;
 		s.value = 'custom';

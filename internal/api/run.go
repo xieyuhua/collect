@@ -8,12 +8,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"collect/internal/collector"
 	"collect/internal/config"
 	"collect/internal/model"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func (s *Server) listRuns(c *gin.Context) {
@@ -69,10 +71,73 @@ func (s *Server) stopRun(c *gin.Context) {
 		return
 	}
 	if s.Engine == nil || !s.Engine.Stop(run.ID) {
-		failMsg(c, "未找到该运行的活跃执行进程，可能已经结束或服务曾经重启")
+		changed, err := s.markRunInterrupted(&run)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if changed {
+			okMsg(c, "未找到活跃执行进程，系统已自动将运行标记为已停止", gin.H{
+				"run_id": run.ID, "status": "stopped", "auto_stopped": true,
+			})
+			return
+		}
+		var current model.RunLog
+		if err := s.DB.First(&current, run.ID).Error; err != nil {
+			fail(c, err)
+			return
+		}
+		if current.Status != "running" {
+			okMsg(c, "运行已经结束", gin.H{
+				"run_id": current.ID, "status": current.Status, "auto_stopped": false,
+			})
+			return
+		}
+		failMsg(c, "运行状态更新失败，请刷新后重试")
 		return
 	}
 	okMsg(c, "已发送结束信号，任务正在停止", gin.H{"run_id": run.ID})
+}
+
+func (s *Server) markRunInterrupted(run *model.RunLog) (bool, error) {
+	const message = "执行进程未找到（可能服务重启或进程异常退出），系统已自动标记结束"
+	now := time.Now()
+	durationMs := now.Sub(run.StartedAt).Milliseconds()
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	changed := false
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.RunLog{}).
+			Where("id = ? AND status = ?", run.ID, "running").
+			Updates(map[string]any{
+				"status":      "stopped",
+				"finished_at": now,
+				"duration_ms": durationMs,
+				"error":       message,
+				"message":     message,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		if err := tx.Model(&model.Task{}).Where("id = ?", run.TaskID).Updates(map[string]any{
+			"last_status":  "stopped",
+			"last_message": message,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.StepLog{}).
+			Where("run_id = ? AND status = ?", run.ID, "running").
+			Update("status", "stopped").Error; err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
 }
 
 func (s *Server) runSteps(c *gin.Context) {

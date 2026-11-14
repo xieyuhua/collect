@@ -470,6 +470,7 @@
       const configFile = C.ref('');
       const loading = C.ref(true);
       const busy = C.ref(false);
+      const activeTab = C.ref('runtime');
 
       async function load() {
         loading.value = true;
@@ -617,6 +618,7 @@
 
       return {
         s: s, b: b, g: g, gp: gp, bs: bs, configFile: configFile, loading: loading, busy: busy,
+        activeTab: activeTab,
         load: load, saveSettings: saveSettings, testWecom: testWecom, downloadBrowser: downloadBrowser, saveBrowser: saveBrowser,
         clearSession: clearSession,
         saveGeneral: saveGeneral, resetGeneral: resetGeneral,
@@ -630,7 +632,44 @@
         <button class="btn" @click="load">↻ 刷新状态</button>
       </div>
 
-      <div class="card">
+      <div class="card settings-tabs-card">
+        <div class="tabs" role="tablist" aria-label="系统设置分类">
+          <button type="button" role="tab" id="settings-tab-runtime" aria-controls="settings-panel-runtime"
+                  data-act="settings-tab" data-tab="runtime"
+                  :class="{ active: activeTab === 'runtime' }"
+                  :aria-selected="activeTab === 'runtime'" @click="activeTab = 'runtime'">
+            运行参数
+            <span v-if="gp.restart_required" class="tab-badge">待重启</span>
+          </button>
+          <button type="button" role="tab" id="settings-tab-notify" aria-controls="settings-panel-notify"
+                  data-act="settings-tab" data-tab="notify"
+                  :class="{ active: activeTab === 'notify' }"
+                  :aria-selected="activeTab === 'notify'" @click="activeTab = 'notify'">
+            通知消息
+            <span v-if="s.wecom_enabled === 'true'" class="tab-badge">已启用</span>
+          </button>
+          <button type="button" role="tab" id="settings-tab-browser" aria-controls="settings-panel-browser"
+                  data-act="settings-tab" data-tab="browser"
+                  :class="{ active: activeTab === 'browser' }"
+                  :aria-selected="activeTab === 'browser'" @click="activeTab = 'browser'">
+            浏览器与会话
+            <span class="tab-badge">{{ bs.available ? '可用' : '未就绪' }}</span>
+          </button>
+          <button type="button" role="tab" id="settings-tab-fingerprint" aria-controls="settings-panel-fingerprint"
+                  data-act="settings-tab" data-tab="fingerprint"
+                  :class="{ active: activeTab === 'fingerprint' }"
+                  :aria-selected="activeTab === 'fingerprint'" @click="activeTab = 'fingerprint'">
+            浏览器指纹
+          </button>
+          <button type="button" role="tab" id="settings-tab-about" aria-controls="settings-panel-about"
+                  data-act="settings-tab" data-tab="about"
+                  :class="{ active: activeTab === 'about' }"
+                  :aria-selected="activeTab === 'about'" @click="activeTab = 'about'">关于平台</button>
+        </div>
+      </div>
+
+      <div v-if="activeTab === 'runtime'" class="card" id="settings-panel-runtime"
+           role="tabpanel" aria-labelledby="settings-tab-runtime">
         <div class="card-head">
           <h3>运行参数（可自定义）</h3>
           <span class="tag" :class="gp.restart_required ? 'amber' : 'green'">{{ gp.restart_required ? '待重启生效' : '已生效' }}</span>
@@ -664,7 +703,8 @@
         </div>
       </div>
 
-      <div class="grid grid-2">
+      <div v-if="activeTab === 'notify'" id="settings-panel-notify"
+           role="tabpanel" aria-labelledby="settings-tab-notify">
         <div class="card">
           <div class="card-head"><h3>通知设置</h3></div>
           <div class="card-body">
@@ -697,7 +737,10 @@
             <p class="hint" style="margin-top:12px">任务级别还可以单独选择「通知 / 不通知」及通知时机；平台消息中心始终记录所有执行结果。</p>
           </div>
         </div>
+      </div>
 
+      <div v-if="activeTab === 'browser'" id="settings-panel-browser"
+           role="tabpanel" aria-labelledby="settings-tab-browser">
         <div class="card">
           <div class="card-head">
             <h3>浏览器内核</h3>
@@ -759,7 +802,8 @@
         </div>
       </div>
 
-      <div class="card">
+      <div v-if="activeTab === 'fingerprint'" class="card" id="settings-panel-fingerprint"
+           role="tabpanel" aria-labelledby="settings-tab-fingerprint">
         <div class="card-head">
           <h3>浏览器指纹（UA / 语言 / 平台 / 时区 / 视口）</h3>
           <span class="tag" :class="b.user_agent ? 'green' : ''">{{ b.user_agent ? '已自定义' : '使用内核默认' }}</span>
@@ -821,7 +865,8 @@
         </div>
       </div>
 
-      <div class="card">
+      <div v-if="activeTab === 'about'" class="card" id="settings-panel-about"
+           role="tabpanel" aria-labelledby="settings-tab-about">
         <div class="card-head"><h3>关于平台</h3></div>
         <div class="card-body hint">
           <p>· 方案一「纯接口」：录制登录接口 → 自动识别 Token 并替换为 <span class="code" v-pre>{{token}}</span> → 列表接口分页抓取，适合验证参数少的站点。</p>

@@ -219,6 +219,8 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .tabs button.active .tab-badge { background: var(--primary); color: #fff; }
 .tabs button:disabled, .tabs button.disabled { opacity: .4; cursor: not-allowed; }
 .tabs button:disabled:hover, .tabs button.disabled:hover { color: var(--muted); background: none; }
+.settings-tabs-card { margin-bottom: 16px; overflow: hidden; }
+.settings-tabs-card .tabs { border-bottom: 0; padding: 0 12px; }
 .pane { display: none; }
 .pane.active { display: block; animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }

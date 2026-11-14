@@ -73,20 +73,26 @@ func (e *Engine) attach(taskID, runID uint, cancel context.CancelFunc) {
 
 // Stop sends a cancellation signal to a running task and reports whether the run was active.
 func (e *Engine) Stop(runID uint) bool {
-	e.mu.Lock()
-	var cancel context.CancelFunc
-	for _, ctrl := range e.running {
-		if ctrl != nil && ctrl.runID == runID {
-			cancel = ctrl.cancel
-			break
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		e.mu.Lock()
+		var cancel context.CancelFunc
+		for _, ctrl := range e.running {
+			if ctrl != nil && ctrl.runID == runID {
+				cancel = ctrl.cancel
+				break
+			}
 		}
+		e.mu.Unlock()
+		if cancel != nil {
+			cancel()
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	e.mu.Unlock()
-	if cancel == nil {
-		return false
-	}
-	cancel()
-	return true
 }
 
 func (e *Engine) release(taskID uint) {
