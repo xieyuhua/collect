@@ -788,8 +788,25 @@
             </div>
             <div><label class="field">视口宽</label><input id="brW" type="number" v-model.number="b.width" /></div>
             <div><label class="field">视口高</label><input id="brH" type="number" v-model.number="b.height" /></div>
-            <div class="full"><label class="field">额外启动参数（每行一个，如 --disable-gpu）</label>
-              <textarea id="brArgs" v-model="b.extra_args_text" rows="2" placeholder="--disable-gpu"></textarea>
+            <div class="full"><label class="field">额外启动参数（每行填写一个完整的 Chromium 参数）</label>
+              <textarea id="brArgs" v-model="b.extra_args_text" rows="4"
+                        placeholder="--disable-gpu&#10;--disable-dev-shm-usage&#10;--window-size=1440,960"></textarea>
+              <div class="hint" style="margin-top:8px">
+                参数会原样传递给 Chromium。布尔参数直接写名称；带取值的参数建议写成
+                <span class="code">--参数名=值</span>，不要在参数前后添加引号，也不要写成
+                <span class="code">--参数名 值</span>。空行会被忽略；修改后只对之后新启动的浏览器生效，
+                已在运行的任务不受影响。
+              </div>
+              <ul class="hint" style="margin:7px 0 0 18px;padding:0">
+                <li><span class="code">--disable-gpu</span>：关闭硬件加速。服务器、虚拟机、远程桌面或出现白屏、黑屏、WebGL 渲染异常时常用；稳定性可能提高，但图形性能会下降。</li>
+                <li><span class="code">--disable-dev-shm-usage</span>：Linux / Docker 中 <span class="code">/dev/shm</span> 太小时使用，可减少浏览器页签崩溃；会改用临时目录，可能增加磁盘读写。勾选“关闭沙箱”时平台会自动添加，无需重复填写。</li>
+                <li><span class="code">--no-sandbox</span>：仅在 Linux 容器、以 root 运行且确实无法启动时使用。它会降低浏览器隔离安全性，普通 Windows 环境不要添加；可优先使用本页的“关闭沙箱”选项。</li>
+                <li><span class="code">--window-size=1440,960</span>：设置初始窗口尺寸。通常优先使用上方的“视口宽 / 视口高”，避免两处配置冲突。</li>
+              </ul>
+              <div class="hint" style="margin-top:6px">
+                不要一次性复制大量网上参数。未知参数可能被 Chromium 忽略，也可能导致浏览器无法启动；
+                排查问题时可先清空全部额外参数，再逐行添加验证。
+              </div>
             </div>
           </div>
           <div class="row" style="margin-top:14px">
