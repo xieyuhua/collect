@@ -21,7 +21,7 @@
           <span class="k">错误</span><span style="color:#c43239">{{ step.error }}</span>
         </template>
       </div>
-      <h4>SQL 模板 / 目标表</h4><div class="pre">{{ step.url || '-' }}</div>
+      <h4>实际执行 SQL</h4><div class="pre">{{ step.url || '-' }}</div>
       <h4>执行结果</h4><div class="pre">{{ step.resp_body || '-' }}</div>
     </div>
     <div v-else>

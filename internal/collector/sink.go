@@ -107,14 +107,15 @@ func quoteIdent(typ, name string) string {
 
 // SinkWriter 批量写入目标数据库
 type SinkWriter struct {
-	db    *sql.DB
-	typ   string
-	table string
-	cols  []string
-	mode  string
-	keys  []string
-	batch int
-	buf   []map[string]any
+	db      *sql.DB
+	typ     string
+	table   string
+	cols    []string
+	mode    string
+	keys    []string
+	batch   int
+	buf     []map[string]any
+	lastSQL string // 最近一次实际执行的 SQL，出错时随错误一起返回
 }
 
 func NewSinkWriter(ds model.DataSource, table string, cols []string, mode string, keys []string, batch int, autoCreate bool) (*SinkWriter, error) {
@@ -135,6 +136,17 @@ func NewSinkWriter(ds model.DataSource, table string, cols []string, mode string
 		return nil, fmt.Errorf("数据库连接失败: %w", err)
 	}
 	typ := strings.ToLower(ds.Type)
+	// 冲突主键列必须按字段映射的实际大小写落到 SQL 里：
+	// Oracle 带引号的标识符区分大小写，映射目标为 insuranceNo、
+	// 主键列填 INSURANCENO 时，MERGE 的 USING 子查询别名与 ON 条件不匹配，
+	// 会报 ORA-00904: "S"."INSURANCENO": invalid identifier。
+	if strings.EqualFold(mode, "upsert") && len(keys) > 0 {
+		keys, err = resolveKeyColumns(typ, cols, keys)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if autoCreate {
 		if err := ensureTable(db, typ, table, cols, keys); err != nil {
 			db.Close()
@@ -145,6 +157,39 @@ func NewSinkWriter(ds model.DataSource, table string, cols []string, mode string
 		batch = 200
 	}
 	return &SinkWriter{db: db, typ: typ, table: table, cols: cols, mode: mode, keys: keys, batch: batch}, nil
+}
+
+// resolveKeyColumns 把「冲突主键列」按字段映射的列名做大小写不敏感对齐。
+//
+// Oracle 的 MERGE 会把主键列同时用在 USING 子查询别名和 ON 条件里，
+// 两处大小写不一致（映射目标 insuranceNo、主键列填 INSURANCENO）时，
+// Oracle 带引号的标识符区分大小写，会报 ORA-00904: "S"."INSURANCENO"。
+// 因此这里统一成映射里的实际拼写；主键列根本不在映射里时，Oracle 无法生成
+// 合法的 MERGE，提前给出可读的中文错误，而不是等数据库报 ORA-00904。
+// 其他数据库的 upsert 不要求主键列出现在插入列里，找不到时保持原样。
+func resolveKeyColumns(typ string, cols, keys []string) ([]string, error) {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		name := strings.TrimSpace(k)
+		if name == "" {
+			continue
+		}
+		hit := ""
+		for _, c := range cols {
+			if strings.EqualFold(c, name) {
+				hit = c
+				break
+			}
+		}
+		if hit == "" {
+			if typ == "oracle" {
+				return nil, fmt.Errorf("冲突主键列「%s」不在字段映射的目标字段（%s）中，Oracle 的 MERGE 需要主键列同时出现在插入列里", name, strings.Join(cols, ", "))
+			}
+			hit = name
+		}
+		out = append(out, hit)
+	}
+	return out, nil
 }
 
 func ensureTable(db *sql.DB, typ, table string, cols []string, keys []string) error {
@@ -255,11 +300,35 @@ func (w *SinkWriter) flush(rows []map[string]any) error {
 	if query == "" {
 		return errors.New("没有可写入的数据")
 	}
+	w.lastSQL = query
 	_, err := w.db.ExecContext(ctx, query, args...)
-	if err != nil && w.mode == "upsert" && (strings.Contains(err.Error(), "ON CONFLICT") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "UNIQUE constraint")) {
-		return fmt.Errorf("写入失败：目标表 %s 缺少与 %v 匹配的主键/唯一约束，请改用 insert 模式或先为该表建立唯一索引（%w）", w.table, w.keys, err)
+	if err != nil {
+		if w.mode == "upsert" && (strings.Contains(err.Error(), "ON CONFLICT") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "UNIQUE constraint")) {
+			return fmt.Errorf("写入失败：目标表 %s 缺少与 %v 匹配的主键/唯一约束，请改用 insert 模式或先为该表建立唯一索引（%w）", w.table, w.keys, err)
+		}
+		return fmt.Errorf("%w（语句: %s）", err, previewSQL(query, 4000))
 	}
-	return err
+	return nil
+}
+
+// LastSQL 最近一次实际执行的 SQL（用于落库步骤日志展示）
+func (w *SinkWriter) LastSQL() string {
+	if w.lastSQL != "" {
+		return w.lastSQL
+	}
+	if w.typ == "oracle" {
+		if w.mode == "upsert" && len(w.keys) > 0 {
+			q, _ := w.oracleMergeSQL(nil)
+			return q
+		}
+		q, _ := w.oracleInsertSQL(nil)
+		return q
+	}
+	if len(w.cols) > 0 {
+		q, _ := w.buildInsert([]map[string]any{nil})
+		return q
+	}
+	return ""
 }
 
 func (w *SinkWriter) buildInsert(rows []map[string]any) (string, []any) {
@@ -334,28 +403,46 @@ func (w *SinkWriter) upsertClause() string {
 }
 
 func (w *SinkWriter) insertOracle(ctx context.Context, row map[string]any) error {
+	var q string
+	var args []any
 	if w.mode != "upsert" || len(w.keys) == 0 {
-		var ph, cols []string
-		var args []any
-		for i, c := range w.cols {
-			ph = append(ph, fmt.Sprintf(":%d", i+1))
-			cols = append(cols, quoteIdent(w.typ, c))
+		q, args = w.oracleInsertSQL(row)
+	} else {
+		q, args = w.oracleMergeSQL(row)
+	}
+	w.lastSQL = q
+	if _, err := w.db.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("%w（语句: %s）", err, previewSQL(q, 4000))
+	}
+	return nil
+}
+
+// oracleInsertSQL 生成单行 INSERT；row 为 nil 时只生成语句骨架供日志展示
+func (w *SinkWriter) oracleInsertSQL(row map[string]any) (string, []any) {
+	var ph, cols []string
+	var args []any
+	for i, c := range w.cols {
+		ph = append(ph, fmt.Sprintf(":%d", i+1))
+		cols = append(cols, quoteIdent(w.typ, c))
+		if row != nil {
 			args = append(args, dbValue(row[c]))
 		}
-		q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdent(w.typ, w.table), strings.Join(cols, ","), strings.Join(ph, ","))
-		_, err := w.db.ExecContext(ctx, q, args...)
-		return err
 	}
-	var selects, cols, sets, insCols, insVals []string
+	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdent(w.typ, w.table), strings.Join(cols, ","), strings.Join(ph, ","))
+	return q, args
+}
+
+// oracleMergeSQL 生成单行 MERGE；row 为 nil 时只生成语句骨架供日志展示
+func (w *SinkWriter) oracleMergeSQL(row map[string]any) (string, []any) {
+	var selects, insCols, insVals, sets, on []string
 	var args []any
-	i := 0
-	for _, c := range w.cols {
-		i++
-		selects = append(selects, fmt.Sprintf(":%d AS %s", i, quoteIdent(w.typ, c)))
-		cols = append(cols, quoteIdent(w.typ, c))
+	for i, c := range w.cols {
+		selects = append(selects, fmt.Sprintf(":%d AS %s", i+1, quoteIdent(w.typ, c)))
 		insCols = append(insCols, quoteIdent(w.typ, c))
 		insVals = append(insVals, "s."+quoteIdent(w.typ, c))
-		args = append(args, dbValue(row[c]))
+		if row != nil {
+			args = append(args, dbValue(row[c]))
+		}
 	}
 	keySet := map[string]bool{}
 	for _, k := range w.keys {
@@ -367,7 +454,6 @@ func (w *SinkWriter) insertOracle(ctx context.Context, row map[string]any) error
 		}
 		sets = append(sets, fmt.Sprintf("t.%s=s.%s", quoteIdent(w.typ, c), quoteIdent(w.typ, c)))
 	}
-	var on []string
 	for _, k := range w.keys {
 		on = append(on, fmt.Sprintf("t.%s=s.%s", quoteIdent(w.typ, k), quoteIdent(w.typ, k)))
 	}
@@ -376,8 +462,7 @@ func (w *SinkWriter) insertOracle(ctx context.Context, row map[string]any) error
 		q += " WHEN MATCHED THEN UPDATE SET " + strings.Join(sets, ", ")
 	}
 	q += fmt.Sprintf(" WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s)", strings.Join(insCols, ","), strings.Join(insVals, ","))
-	_, err := w.db.ExecContext(ctx, q, args...)
-	return err
+	return q, args
 }
 
 func dbValue(v any) any {

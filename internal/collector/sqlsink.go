@@ -22,14 +22,15 @@ import (
 //
 // 每条记录执行一次 SQL，按 batch 条数包在同一事务里提交。
 type SQLSink struct {
-	db    *sql.DB
-	typ   string
-	tpl   string
-	cols  []string
-	batch int
-	vars  *Vars
-	buf   []map[string]any
-	exec  int
+	db      *sql.DB
+	typ     string
+	tpl     string
+	cols    []string
+	batch   int
+	vars    *Vars
+	buf     []map[string]any
+	exec    int
+	lastSQL string // 最近一条渲染后的 SQL，出错时随错误一起返回
 }
 
 // NewSQLSink 创建自定义 SQL 落库器
@@ -59,6 +60,9 @@ func NewSQLSink(ds model.DataSource, tmpl string, cols []string, batch int, vars
 
 // Executed 已执行的 SQL 条数
 func (s *SQLSink) Executed() int { return s.exec }
+
+// LastSQL 最近一条实际执行的 SQL（用于落库步骤日志展示）
+func (s *SQLSink) LastSQL() string { return s.lastSQL }
 
 // Write 追加记录，达到批量条数后提交
 func (s *SQLSink) Write(rows []map[string]any) error {
@@ -111,9 +115,10 @@ func (s *SQLSink) flush(rows []map[string]any) error {
 			_ = tx.Rollback()
 			return err
 		}
+		s.lastSQL = q
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("执行 SQL 失败: %w（语句: %s）", err, previewSQL(q, 200))
+			return fmt.Errorf("执行 SQL 失败: %w（语句: %s）", err, previewSQL(q, 4000))
 		}
 		s.exec++
 	}
@@ -275,11 +280,18 @@ func countPlaceholders(q, typ string) int {
 
 func isDigitByte(c byte) bool { return c >= '0' && c <= '9' }
 
-// previewSQL 单行化 SQL 便于日志展示
+// previewSQL 单行化 SQL 便于日志展示；截断时按 rune 边界处理，避免把中文/引号截成半个字符
 func previewSQL(q string, max int) string {
 	q = strings.Join(strings.Fields(q), " ")
-	if len(q) <= max {
+	if max <= 0 || len(q) <= max {
 		return q
 	}
-	return q[:max] + "…"
+	cut := 0
+	for i := range q {
+		if i > max {
+			break
+		}
+		cut = i
+	}
+	return q[:cut] + "…"
 }

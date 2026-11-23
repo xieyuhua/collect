@@ -54,12 +54,15 @@ type sinkRoute struct {
 	pending   []map[string]any
 	batchSize int
 	rows      int
+	writeErr  error // 本次运行中该来源的首次写库错误，供 Close 生成落库步骤时使用
 }
 
 // RowWriter 目标库写入器（按表批量写入 / 自定义 SQL 写入）
 type RowWriter interface {
 	Write(rows []map[string]any) error
 	Close() error
+	// LastSQL 最近一次实际执行的 SQL，用于运行详情与排错
+	LastSQL() string
 }
 
 func NewPipeline(db *gorm.DB, task *model.Task, run *model.RunLog, log *applog.Logger, vars *Vars) (*Pipeline, error) {
@@ -509,9 +512,26 @@ func (p *Pipeline) flushRoute(rt *sinkRoute) error {
 	rows := rt.pending
 	rt.pending = nil
 	if err := rt.writer.Write(rows); err != nil {
-		return fmt.Errorf("接口「%s」写入数据库失败: %w", rt.label, err)
+		err = fmt.Errorf("接口「%s」写入数据库失败: %w", rt.label, err)
+		if rt.writeErr == nil {
+			rt.writeErr = err
+		}
+		return err
 	}
 	return nil
+}
+
+// sinkSQL 取落库器实际执行的 SQL（取不到时回退到配置里的模板 / 目标表）
+func (p *Pipeline) sinkSQL(rt *sinkRoute) string {
+	if rt.writer != nil {
+		if q := strings.TrimSpace(rt.writer.LastSQL()); q != "" {
+			return q
+		}
+	}
+	if strings.EqualFold(rt.sink.WriteMode, "sql") {
+		return strings.TrimSpace(rt.sink.SQLText)
+	}
+	return ""
 }
 
 func (p *Pipeline) flushDataset() error {
@@ -532,7 +552,12 @@ func (p *Pipeline) Close() error {
 			continue
 		}
 		start := time.Now()
+		// flush 阶段的错误已经记在 rt.writeErr 上：此时缓冲已在失败时清空，
+		// 若只看本次 flush 的结果，落库步骤会被误记成成功。
 		err := p.flushRoute(rt)
+		if err == nil {
+			err = rt.writeErr
+		}
 		if e := rt.writer.Close(); e != nil && err == nil {
 			err = fmt.Errorf("数据库写入失败: %w", e)
 		}
@@ -543,6 +568,9 @@ func (p *Pipeline) Close() error {
 			msg = err.Error()
 			if firstErr == nil {
 				firstErr = err
+			}
+			if p.log != nil {
+				p.log.Error("sink", "接口「%s」写入数据库失败: %s\nSQL: %s", rt.label, err.Error(), p.sinkSQL(rt))
 			}
 		}
 		p.addSinkStep(rt, status, msg, time.Since(start))
@@ -569,8 +597,9 @@ func (p *Pipeline) addSinkStep(rt *sinkRoute, status, msg string, dur time.Durat
 	var maxSeq int
 	p.db.Model(&model.StepLog{}).Where("run_id = ?", p.run.ID).Select("COALESCE(MAX(seq),0)").Scan(&maxSeq)
 	dest := strings.TrimSpace(rt.sink.Table)
-	if strings.EqualFold(rt.sink.WriteMode, "sql") {
-		dest = previewSQL(rt.sink.SQLText, 200)
+	if q := p.sinkSQL(rt); q != "" {
+		// upsert / insert 的 SQL 才是真正的执行语句；自定义 SQL 模板也在这里展示
+		dest = previewSQL(q, 4000)
 	}
 	kind := "数据库"
 	if rt.sink.Type == "both" {
@@ -580,6 +609,9 @@ func (p *Pipeline) addSinkStep(rt *sinkRoute, status, msg string, dur time.Durat
 	}
 	if ds, ok := p.dsCache[rt.sink.DataSourceID]; ok && strings.TrimSpace(ds.Name) != "" {
 		kind = strings.ToUpper(ds.Type) + " · " + ds.Name
+	}
+	if dest == "" {
+		dest = "-"
 	}
 	name := fmt.Sprintf("落库 · %s → %s", rt.label, kind)
 	sl := model.StepLog{
