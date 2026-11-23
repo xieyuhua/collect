@@ -170,6 +170,7 @@ func TestBuildDraftSingleCompat(t *testing.T) {
 		t.Errorf("单接口应按 id 去重，实际 %+v", dd)
 	}
 }
+
 // 录制里的「打开 xxx」跳转必须变成 UI 步骤：
 // 首页跳转和起始地址相同要跳过，跳到内嵌列表页要保留，否则回放找错页面
 func TestBuildDraftKeepsNavigateSteps(t *testing.T) {
@@ -201,6 +202,42 @@ func TestBuildDraftKeepsNavigateSteps(t *testing.T) {
 	}
 	if steps[3].Value != "https://demo.test/layout.htm?listconfigid=2025081103" {
 		t.Errorf("跳转步骤地址错误: %+v", steps[3])
+	}
+}
+
+// 组件库下拉：录到的 select 动作必须把触发器和选项文字带进 UI 步骤，
+// 否则回放时选项元素还不存在，找不到下拉
+func TestBuildDraftSelectKeepsTrigger(t *testing.T) {
+	now := time.Now().UnixMilli()
+	actions := []browser.Action{
+		{
+			Type: "select", Selector: "#sizeDD li:nth-of-type(3)", Value: "50", Text: "50 条/页",
+			Trigger: "#sizeTrigger", TriggerText: "20 条/页", At: now,
+		},
+	}
+	s := &Session{ID: "s1", Mode: "ui", StartURL: "https://demo.test/list"}
+	task, err := buildDraftFrom(s, DraftRequest{Mode: "ui"}, demoRequests(), actions)
+	if err != nil {
+		t.Fatalf("生成草稿失败: %v", err)
+	}
+	steps := task["ui_steps"].([]model.UIStep)
+	var sel *model.UIStep
+	for i := range steps {
+		if steps[i].Action == "select" {
+			sel = &steps[i]
+		}
+	}
+	if sel == nil {
+		t.Fatalf("草稿里没有 select 步骤: %+v", steps)
+	}
+	if sel.Trigger != "#sizeTrigger" {
+		t.Errorf("触发器丢失: %+v", sel)
+	}
+	if sel.TriggerText != "20 条/页" {
+		t.Errorf("触发器文字丢失: %+v", sel)
+	}
+	if sel.Value != "50" || sel.Text != "50 条/页" {
+		t.Errorf("选项值 / 文字丢失: %+v", sel)
 	}
 }
 

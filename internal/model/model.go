@@ -64,6 +64,11 @@ type UIStep struct {
 	// OpenMode 仅「打开页面」使用：空/nav = 整页打开（会重新加载页面）；
 	// spa = 同源站内路由跳转（不刷新页面，保留 SPA 内存中的登录态）
 	OpenMode string `json:"open_mode,omitempty"`
+	// Trigger 仅「下拉选择」使用：自定义下拉的触发器选择器。
+	// 留空表示原生 <select>；填写后回放会先点触发器，再按 Value/Text 选中弹层里的选项。
+	Trigger string `json:"trigger,omitempty"`
+	// TriggerText 触发器文字（选择器失效时按文字点开下拉）
+	TriggerText string `json:"trigger_text,omitempty"`
 }
 
 // CaptureConfig UI 模式下的数据抓取配置

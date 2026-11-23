@@ -901,7 +901,13 @@ func actionToStep(a browser.Action) (model.UIStep, bool) {
 		if a.Selector == "" {
 			return model.UIStep{}, false
 		}
-		st = model.UIStep{Action: "select", Selector: a.Selector, Value: a.Value, Desc: "选择 " + truncate(a.Selector, 30)}
+		// 自定义下拉（组件库）：选项元素回放时还不存在，必须带上触发器，
+		// 回放时先点开触发器再按 value / 文字选选项
+		st = model.UIStep{
+			Action: "select", Selector: a.Selector, Value: a.Value, Text: a.Text,
+			Trigger: a.Trigger, TriggerText: a.TriggerText,
+			Desc: "选择 " + truncate(a.Selector, 30),
+		}
 	case "press":
 		if a.Key != "Enter" {
 			return model.UIStep{}, false

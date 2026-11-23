@@ -49,6 +49,10 @@ type Action struct {
 	At       int64   `json:"at"`
 	// Frame 该动作发生在哪个 iframe（CSS 选择器，可能是 "a >> b" 嵌套）；空 = 主页面
 	Frame string `json:"frame,omitempty"`
+	// Trigger 自定义下拉的触发器选择器（组件库下拉在 mousedown 时才提交选择，
+	// 选项本身在回放时还不存在，需要先点触发器把弹层打开）
+	Trigger     string `json:"trigger,omitempty"`
+	TriggerText string `json:"trigger_text,omitempty"`
 }
 
 // debugDrain 打开后会把 iframe 动作抓取的诊断信息打到 stderr（COLLECT_DEBUG_DRAIN=1）
@@ -346,6 +350,7 @@ func (r *Recorder) drainActions(wait time.Duration) {
 				if (!window.__rec) return '[]';
 				const a = window.__rec;
 				window.__rec = [];
+				try { sessionStorage.setItem('__collect_actions', '[]'); } catch (e) {}
 				return JSON.stringify(a);
 			}`)
 			if err != nil || res == nil {
@@ -449,8 +454,21 @@ func (r *Recorder) Actions() []Action {
 const recordJS = `() => {
   if (window.__recordInstalled) return true;
   window.__recordInstalled = true;
-  window.__rec = [];
-  const push = (o) => { try { window.__rec.push(o); } catch (e) {} };
+  // 动作写 sessionStorage：录制中页面跳转时新文档会重新注入脚本，
+  // 上一页还没来得及被轮询取走的动作（典型是「选完下拉立刻跳转」）不会丢。
+  const STORE = '__collect_actions';
+  const load = () => {
+    try {
+      const raw = sessionStorage.getItem(STORE);
+      const a = raw ? JSON.parse(raw) : [];
+      return Array.isArray(a) ? a : [];
+    } catch (e) { return []; }
+  };
+  window.__rec = load();
+  const persist = () => {
+    try { sessionStorage.setItem(STORE, JSON.stringify(window.__rec)); } catch (e) {}
+  };
+  const push = (o) => { try { window.__rec.push(o); persist(); } catch (e) {} };
   const cpath = (el) => {
     if (!el || el.nodeType !== 1) return '';
     try {
@@ -476,6 +494,60 @@ const recordJS = `() => {
     } catch (e) { return ''; }
   };
   const info = (el) => ({ selector: cpath(el), text: ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '').trim().slice(0, 80), url: location.href, at: Date.now() });
+  // optionValue 从选项元素上取出「提交给业务的值」：data-* 优先，其次 value 属性
+  const optionValue = (el) => {
+    const attrs = ['data-value', 'data-val', 'data-v', 'data-key', 'data-id', 'value'];
+    for (let i = 0; i < attrs.length; i++) {
+      const v = el.getAttribute(attrs[i]);
+      if (v !== null && v !== '') return v;
+    }
+    return ((el.innerText || '') + '').trim().slice(0, 120);
+  };
+  // optionLooksLike 判断元素是否带「下拉选项」语义（避免把普通 li 当选项）
+  const optionLooksLike = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return tag === 'li' || tag === 'dd' || tag === 'option' ||
+      role === 'option' || role === 'menuitem' || role === 'treeitem' ||
+      !!el.getAttribute('data-value') || !!el.getAttribute('data-v') || !!el.getAttribute('data-val');
+  };
+  // popupLayer 向上找「浮层容器」：绝对/固定定位且当前可见
+  const popupLayer = (el) => {
+    let cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      const cs = getComputedStyle(cur);
+      const shown = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && !cur.hidden;
+      if (shown && (cs.position === 'absolute' || cs.position === 'fixed')) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  };
+  // 最近一次点击：用于确认「弹层是这次点击才打开的」
+  let lastClickEl = null, lastClickAt = 0;
+  // seq：给动作一个单调序号，drain 时按它去重/合并
+  let seq = 0;
+  const stamp = (o) => { seq += 1; o.k = seq; return o; };
+  document.addEventListener('mousedown', (ev) => {
+    const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (!el) return;
+    if (!optionLooksLike(el)) return;
+    const layer = popupLayer(el);
+    if (!layer) return;
+    // 弹层必须是刚刚点击才出现的（Element / AntD 的选择器会在 mousedown 时提交并关闭）
+    const openedByClick = lastClickEl && Date.now() - lastClickAt < 2000 &&
+      !layer.contains(lastClickEl) && !lastClickEl.contains(layer);
+    if (!openedByClick) return;
+    const o = stamp(info(el));
+    o.type = 'select';
+    o.value = optionValue(el);
+    o.trigger = cpath(lastClickEl);
+    const tv = ((lastClickEl.innerText || lastClickEl.value || '') + '').trim().slice(0, 120);
+    if (tv) o.triggerText = tv;
+    push(o);
+    // 这次 mousedown 已经提交了选择，后续同一次操作的 click（如果还有）不应再录成点击
+    lastClickEl = null; lastClickAt = 0;
+  }, true);
   document.addEventListener('click', (ev) => {
     let el = ev.target;
     if (!el || el.nodeType !== 1) return;
@@ -483,7 +555,13 @@ const recordJS = `() => {
     if (tag === 'input' && (el.type === 'text' || el.type === 'password' || el.type === 'number' || el.type === 'search' || el.type === 'email')) return;
     if (tag === 'textarea') return;
     el = el.closest('button,a,[role=button],input,select,textarea,label,li,td,th,img,span,i') || el;
-    const o = info(el); o.type = 'click'; o.x = ev.clientX; o.y = ev.clientY;
+    // 选项上的 click 已经由 mousedown 录成 select 动作，跳过避免重复
+    if (optionLooksLike(el)) {
+      const layer = popupLayer(el);
+      if (layer) return;
+    }
+    lastClickEl = el; lastClickAt = Date.now();
+    const o = stamp(info(el)); o.type = 'click'; o.x = ev.clientX; o.y = ev.clientY;
     push(o);
   }, true);
   const timers = new WeakMap();
@@ -495,20 +573,20 @@ const recordJS = `() => {
     const ty = (el.type || 'text').toLowerCase();
     if (ty === 'checkbox' || ty === 'radio' || ty === 'file' || ty === 'range') return;
     if (timers.has(el)) clearTimeout(timers.get(el));
-    timers.set(el, setTimeout(() => { const o = info(el); o.type = 'input'; o.value = el.value; push(o); }, 350));
+    timers.set(el, setTimeout(() => { const o = stamp(info(el)); o.type = 'input'; o.value = el.value; push(o); }, 350));
   }, true);
   document.addEventListener('change', (ev) => {
     const el = ev.target;
     if (!el || !el.tagName) return;
     const tag = el.tagName.toLowerCase();
     const ty = (el.type || '').toLowerCase();
-    const o = info(el);
+    const o = stamp(info(el));
     if (tag === 'select') { o.type = 'select'; o.value = el.value; push(o); return; }
     if (ty === 'checkbox' || ty === 'radio') { o.type = 'input'; o.value = el.checked ? 'true' : 'false'; push(o); }
   }, true);
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' || ev.key === 'Tab') {
-      const o = info(ev.target);
+      const o = stamp(info(ev.target));
       o.type = 'press'; o.key = ev.key;
       push(o);
     }

@@ -68,7 +68,10 @@
     };
   }
   function blankUIStep() {
-    return { action: 'click', selector: '', value: '', key: '', ms: 0, text: '', desc: '', frame: '', open_mode: '' };
+    return {
+      action: 'click', selector: '', value: '', key: '', ms: 0, text: '', desc: '', frame: '',
+      open_mode: '', trigger: '',
+    };
   }
 
   function blankSink(mode) {
@@ -423,6 +426,8 @@
               action: s.action, selector: s.selector || '', value: s.value || '', key: s.key || '',
               ms: Number(s.ms || 0), text: s.text || '', desc: s.desc || '', frame: s.frame || '',
               open_mode: s.action === 'open' ? (s.open_mode || '') : '',
+              trigger: s.action === 'select' ? (s.trigger || '') : '',
+              trigger_text: s.action === 'select' ? (s.trigger_text || '') : '',
             };
           }),
           login_steps: (task.login_steps || []).map(function (s) {
@@ -430,6 +435,8 @@
               action: s.action, selector: s.selector || '', value: s.value || '', key: s.key || '',
               ms: Number(s.ms || 0), text: s.text || '', desc: s.desc || '', frame: s.frame || '',
               open_mode: s.action === 'open' ? (s.open_mode || '') : '',
+              trigger: s.action === 'select' ? (s.trigger || '') : '',
+              trigger_text: s.action === 'select' ? (s.trigger_text || '') : '',
             };
           }),
           capture: (function () {
@@ -1102,6 +1109,9 @@
                   <div v-if="st.action === 'input'"><label class="field">输入内容</label>
                     <input v-model="st.value" data-act="ui-value" placeholder="要填入的内容，可用 {{变量}}" />
                   </div>
+                  <div v-if="st.action === 'select'"><label class="field">下拉触发器（自定义下拉必填）</label>
+                    <input v-model="st.trigger" data-act="ui-trigger" placeholder="#sizeTrigger / .el-select（留空 = 原生 select）" />
+                  </div>
                   <div v-if="st.action === 'select'"><label class="field">选项值 / 文本</label>
                     <input v-model="st.value" data-act="ui-value" placeholder="要选中的 option 值或文字" />
                   </div>
@@ -1179,6 +1189,9 @@
                   </div>
                   <div v-if="st.action === 'input'"><label class="field">输入内容</label>
                     <input v-model="st.value" data-act="ui-value" placeholder="要填入的内容，可用 {{变量}}" />
+                  </div>
+                  <div v-if="st.action === 'select'"><label class="field">下拉触发器（自定义下拉必填）</label>
+                    <input v-model="st.trigger" data-act="ui-trigger" placeholder="#sizeTrigger / .el-select（留空 = 原生 select）" />
                   </div>
                   <div v-if="st.action === 'select'"><label class="field">选项值 / 文本</label>
                     <input v-model="st.value" data-act="ui-value" placeholder="要选中的 option 值或文字" />

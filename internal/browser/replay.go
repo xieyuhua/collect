@@ -267,20 +267,7 @@ func (r *Replayer) Do(s model.UIStep) error {
 		}
 		return nil
 	case "select":
-		el, err := r.element(p, s.Selector, s)
-		if err != nil {
-			return err
-		}
-		if err := el.Select([]string{s.Value}, true, rod.SelectorTypeText); err != nil {
-			if _, err2 := el.Eval(`(v) => {
-				this.value = v;
-				this.dispatchEvent(new Event('change', {bubbles: true}));
-				return true;
-			}`, s.Value); err2 != nil {
-				return err
-			}
-		}
-		return nil
+		return r.doSelect(p, s)
 	case "press":
 		key := mapKey(s.Key)
 		if s.Selector != "" {
@@ -314,6 +301,134 @@ func (r *Replayer) Do(s model.UIStep) error {
 	default:
 		return fmt.Errorf("未知动作: %s", s.Action)
 	}
+}
+
+// doSelect 下拉选择：
+//   - 原生 <select>：按 value / 文字选中 option（rod.Select 会触发 input + change）
+//   - 自定义下拉（组件库）：先点开触发器，再在弹层里按 value 属性或文字点选项
+func (r *Replayer) doSelect(p *rod.Page, s model.UIStep) error {
+	trigger := strings.TrimSpace(s.Trigger)
+	if trigger == "" {
+		el, err := r.element(p, s.Selector, s)
+		if err != nil {
+			// 选择器可能本身就是自定义下拉的容器（老任务只录到容器）
+			if ok, perr := r.pickCustomOption(p, s); ok {
+				return nil
+			} else if perr != nil {
+				return perr
+			}
+			return err
+		}
+		if _, err := el.Eval(`() => (this.tagName || '').toLowerCase() === 'select'`); err == nil {
+			if err := el.Select([]string{s.Value}, true, rod.SelectorTypeText); err == nil {
+				return nil
+			}
+			if _, err2 := el.Eval(`(v) => {
+				this.value = v;
+				this.dispatchEvent(new Event('input', {bubbles: true}));
+				this.dispatchEvent(new Event('change', {bubbles: true}));
+				return true;
+			}`, s.Value); err2 == nil {
+				return nil
+			}
+		}
+		if ok, err := r.pickCustomOption(p, s); ok {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return fmt.Errorf("未找到下拉选项: %s = %s", s.Selector, s.Value)
+	}
+
+	// 自定义下拉：先点开触发器（选择器优先，其次按文字）
+	opened := false
+	if el, err := r.element(p, trigger, model.UIStep{Selector: trigger, Frame: s.Frame, Text: s.TriggerText}); err == nil {
+		_ = el.ScrollIntoView()
+		if err := el.Click(proto.InputMouseButtonLeft, 1); err == nil {
+			opened = true
+		}
+	}
+	if !opened && strings.TrimSpace(s.TriggerText) != "" {
+		if ok, _ := r.clickByText(p, s.TriggerText); ok {
+			opened = true
+		}
+	}
+	if !opened {
+		return fmt.Errorf("未找到下拉触发器: %s", trigger)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if ok, err := r.pickCustomOption(p, s); ok {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return fmt.Errorf("下拉已展开，但没有找到匹配 %q 的选项", s.Value)
+}
+
+// pickCustomOption 在已展开的下拉弹层里按 value 属性 / 文字点选项。
+// 返回 ok=true 表示已点中；err 仅在出现硬错误（元素操作失败）时返回。
+func (r *Replayer) pickCustomOption(p *rod.Page, s model.UIStep) (bool, error) {
+	val := strings.TrimSpace(s.Value)
+	txt := strings.TrimSpace(s.Text)
+	if txt == "" {
+		txt = val
+	}
+	optSel := strings.TrimSpace(s.Selector)
+	// 选择器可能指向 option 本身（原生 select 的 option 录成了 selector）
+	res, err := p.Timeout(4*time.Second).Eval(`(arg) => {
+		const norm = (v) => (v == null ? '' : String(v)).replace(/\s+/g, ' ').trim();
+		const val = norm(arg.val), txt = norm(arg.txt);
+		const attrs = ['data-value', 'data-val', 'data-v', 'data-key', 'data-id', 'value'];
+		const valOf = (el) => {
+			for (const a of attrs) {
+				const v = el.getAttribute(a);
+				if (v !== null && v !== '') return v;
+			}
+			return norm(el.innerText);
+		};
+		const visible = (el) => {
+			const r = el.getBoundingClientRect();
+			const cs = getComputedStyle(el);
+			return r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0';
+		};
+		const cands = Array.from(document.querySelectorAll(
+			'[role=option],[role=menuitem],[role=treeitem],li,dd,.el-select-dropdown__item,.ant-select-item-option,option'
+		));
+		let hit = null;
+		if (arg.sel) {
+			try {
+				const direct = document.querySelector(arg.sel);
+				if (direct && visible(direct) && (val === '' || valOf(direct) === val || norm(direct.innerText) === txt || norm(direct.innerText).indexOf(txt) >= 0)) {
+					hit = direct;
+				}
+			} catch (e) {}
+		}
+		if (!hit) {
+			const find = (pred) => cands.find((el) => visible(el) && pred(el));
+			hit = find((el) => val !== '' && valOf(el) === val) ||
+			      find((el) => txt !== '' && norm(el.innerText) === txt) ||
+			      find((el) => txt !== '' && norm(el.innerText).indexOf(txt) >= 0);
+		}
+		if (!hit) return '';
+		// 用真实鼠标事件序列，覆盖只在 mousedown 提交的组件库
+		const rect = hit.getBoundingClientRect();
+		const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+		const mk = (type, Ctor, extra) => new Ctor(type, Object.assign({bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy}, extra || {}));
+		hit.dispatchEvent(mk('pointerdown', PointerEvent));
+		hit.dispatchEvent(mk('mousedown', MouseEvent));
+		hit.dispatchEvent(mk('pointerup', PointerEvent));
+		hit.dispatchEvent(mk('mouseup', MouseEvent));
+		hit.dispatchEvent(mk('click', MouseEvent));
+		return norm(hit.innerText) || valOf(hit);
+	}`, map[string]any{"val": s.Value, "txt": txt, "sel": optSel})
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(res.Value.Str()) == "" {
+		return false, nil
+	}
+	time.Sleep(120 * time.Millisecond)
+	return true, nil
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {
