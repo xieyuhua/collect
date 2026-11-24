@@ -543,7 +543,9 @@ const recordJS = `() => {
     o.value = optionValue(el);
     o.trigger = cpath(lastClickEl);
     const tv = ((lastClickEl.innerText || lastClickEl.value || '') + '').trim().slice(0, 120);
-    if (tv) o.triggerText = tv;
+    // 注意：字段名必须是 trigger_text，与 Go 端 Action.TriggerText 的 json tag 一致；
+    // 写成驼峰 triggerText 会被反序列化静默丢弃
+    if (tv) o.trigger_text = tv;
     push(o);
     // 这次 mousedown 已经提交了选择，后续同一次操作的 click（如果还有）不应再录成点击
     lastClickEl = null; lastClickAt = 0;

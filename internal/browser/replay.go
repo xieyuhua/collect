@@ -319,7 +319,13 @@ func (r *Replayer) doSelect(p *rod.Page, s model.UIStep) error {
 			}
 			return err
 		}
-		if _, err := el.Eval(`() => (this.tagName || '').toLowerCase() === 'select'`); err == nil {
+		// 必须看判断结果，而不是只看求值是否报错：
+		// 选择器指向 div 容器时绝不能给它赋 value 假装成功
+		isSelect := false
+		if v, e := el.Eval(`() => (this.tagName || '').toLowerCase() === 'select'`); e == nil {
+			isSelect = v.Value.Bool()
+		}
+		if isSelect {
 			if err := el.Select([]string{s.Value}, true, rod.SelectorTypeText); err == nil {
 				return nil
 			}
@@ -398,7 +404,11 @@ func (r *Replayer) pickCustomOption(p *rod.Page, s model.UIStep) (bool, error) {
 		if (arg.sel) {
 			try {
 				const direct = document.querySelector(arg.sel);
-				if (direct && visible(direct) && (val === '' || valOf(direct) === val || norm(direct.innerText) === txt || norm(direct.innerText).indexOf(txt) >= 0)) {
+				// 直接命中的元素必须自己带选项语义，避免把「包含全部选项文字的容器」当成选项
+				const optionish = direct && ['li','dd','option'].includes((direct.tagName||'').toLowerCase())
+					|| direct && ['option','menuitem','treeitem'].includes((direct.getAttribute('role')||'').toLowerCase())
+					|| direct && !!(direct.getAttribute('data-value') || direct.getAttribute('data-v') || direct.getAttribute('data-val'));
+				if (direct && optionish && visible(direct) && (val === '' || valOf(direct) === val || norm(direct.innerText) === txt || norm(direct.innerText).indexOf(txt) >= 0)) {
 					hit = direct;
 				}
 			} catch (e) {}

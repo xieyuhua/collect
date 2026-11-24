@@ -127,6 +127,14 @@ func TestRecorderCapturesCustomDropdownMousedown(t *testing.T) {
 	if sel.Selector == "" {
 		t.Fatalf("下拉动作缺少选择器")
 	}
+	// trigger_text 必须与 Go 端 json tag 对齐（snake_case），
+	// 之前写成驼峰 triggerText 会被反序列化静默丢弃
+	if sel.TriggerText != "20 条/页" {
+		t.Fatalf("触发器文字丢失（json 字段名应写 trigger_text）: %+v", sel)
+	}
+	if sel.Trigger != "#sizeTrigger" {
+		t.Fatalf("触发器选择器丢失: %+v", sel)
+	}
 }
 
 // 原生 select 选完立即跳转：完成后动作仍然要在

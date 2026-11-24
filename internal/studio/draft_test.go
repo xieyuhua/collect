@@ -241,6 +241,40 @@ func TestBuildDraftSelectKeepsTrigger(t *testing.T) {
 	}
 }
 
+// 自定义下拉录制会同时产出「click 触发器」与「select(trigger=触发器)」，
+// 生成草稿时相邻的触发器 click 必须去掉：select 回放会自己点开，
+// 保留 click 会把弹层 toggle 回去导致选不到选项。
+func TestBuildDraftSelectDropsDuplicateTriggerClick(t *testing.T) {
+	now := time.Now().UnixMilli()
+	actions := []browser.Action{
+		{Type: "click", Selector: "#sizeTrigger", Text: "20 条/页", At: now},
+		{
+			Type: "select", Selector: "#sizeDD li:nth-of-type(3)", Value: "50", Text: "50 条/页",
+			Trigger: "#sizeTrigger", TriggerText: "20 条/页", At: now + 100,
+		},
+	}
+	s := &Session{ID: "s1", Mode: "ui", StartURL: "https://demo.test/list"}
+	task, err := buildDraftFrom(s, DraftRequest{Mode: "ui"}, demoRequests(), actions)
+	if err != nil {
+		t.Fatalf("生成草稿失败: %v", err)
+	}
+	steps := task["ui_steps"].([]model.UIStep)
+	for i, st := range steps {
+		if st.Action == "click" && st.Selector == "#sizeTrigger" {
+			t.Errorf("第 %d 步保留了与 select 触发器相同的 click，回放会 toggle 关闭弹层: %+v", i+1, st)
+		}
+	}
+	found := false
+	for _, st := range steps {
+		if st.Action == "select" && st.Trigger == "#sizeTrigger" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("select 步骤丢失: %+v", steps)
+	}
+}
+
 // 纯接口模式：页面动作会被丢弃，但要给出提示
 func TestBuildDraftAPINotesDroppedActions(t *testing.T) {
 	now := time.Now().UnixMilli()

@@ -70,7 +70,21 @@
   function blankUIStep() {
     return {
       action: 'click', selector: '', value: '', key: '', ms: 0, text: '', desc: '', frame: '',
-      open_mode: '', trigger: '',
+      x: 0, y: 0, open_mode: '', trigger: '',
+    };
+  }
+
+  // UI 步骤 → 提交给后端的结构。
+  // 注意：x / y 是录制时记下的点击坐标，回放找不到选择器时会用它们兜底点击；
+  // 漏掉它们会让「导入能跑、编辑保存后点不动」——所以这里必须原样带上。
+  function uiStepPayload(s) {
+    return {
+      action: s.action, selector: s.selector || '', value: s.value || '', key: s.key || '',
+      ms: Number(s.ms || 0), text: s.text || '', desc: s.desc || '', frame: s.frame || '',
+      x: Number(s.x || 0), y: Number(s.y || 0),
+      open_mode: s.action === 'open' ? (s.open_mode || '') : '',
+      trigger: s.action === 'select' ? (s.trigger || '') : '',
+      trigger_text: s.action === 'select' ? (s.trigger_text || '') : '',
     };
   }
 
@@ -152,9 +166,11 @@
     });
     out.ui_steps.forEach(function (s) {
       s._k = nextKey(); s._collapsed = true; s.frame = s.frame || ''; s.open_mode = s.open_mode || '';
+      s.x = Number(s.x || 0); s.y = Number(s.y || 0);
     });
     out.login_steps.forEach(function (s) {
       s._k = nextKey(); s._collapsed = true; s.frame = s.frame || ''; s.open_mode = s.open_mode || '';
+      s.x = Number(s.x || 0); s.y = Number(s.y || 0);
     });
     out.mapping.forEach(function (m) { m._k = nextKey(); });
     out.sink._keysText = (out.sink.key_columns || []).join(',');
@@ -421,24 +437,8 @@
             if (s._pageMode === 'custom') o.pagination = Object.assign({}, s._page, { enabled: !!s._page.enabled });
             return o;
           }),
-          ui_steps: (task.ui_steps || []).map(function (s) {
-            return {
-              action: s.action, selector: s.selector || '', value: s.value || '', key: s.key || '',
-              ms: Number(s.ms || 0), text: s.text || '', desc: s.desc || '', frame: s.frame || '',
-              open_mode: s.action === 'open' ? (s.open_mode || '') : '',
-              trigger: s.action === 'select' ? (s.trigger || '') : '',
-              trigger_text: s.action === 'select' ? (s.trigger_text || '') : '',
-            };
-          }),
-          login_steps: (task.login_steps || []).map(function (s) {
-            return {
-              action: s.action, selector: s.selector || '', value: s.value || '', key: s.key || '',
-              ms: Number(s.ms || 0), text: s.text || '', desc: s.desc || '', frame: s.frame || '',
-              open_mode: s.action === 'open' ? (s.open_mode || '') : '',
-              trigger: s.action === 'select' ? (s.trigger || '') : '',
-              trigger_text: s.action === 'select' ? (s.trigger_text || '') : '',
-            };
-          }),
+          ui_steps: (task.ui_steps || []).map(uiStepPayload),
+          login_steps: (task.login_steps || []).map(uiStepPayload),
           capture: (function () {
             const rules = (task.capture.rules || []).map(function (r, i) {
               const o = {

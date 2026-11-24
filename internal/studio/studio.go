@@ -454,6 +454,18 @@ func buildDraftFrom(s *Session, req DraftRequest, requests []browser.CapRequest,
 				lastOpen = u
 				st.Desc = "打开 " + truncate(st.Value, 50)
 			}
+			// 自定义下拉：录制会同时产出「click 触发器」和「select(trigger=触发器)」，
+			// 回放时 select 会自己点开触发器，保留相邻 click 会把弹层 toggle 回去。
+			if st.Action == "select" && strings.TrimSpace(st.Trigger) != "" {
+				for j := len(base) - 1; j >= 0 && len(base)-j <= 2; j-- {
+					prev := base[j]
+					if prev.Action == "click" &&
+						strings.EqualFold(strings.TrimSpace(prev.Selector), strings.TrimSpace(st.Trigger)) {
+						base = append(base[:j], base[j+1:]...)
+						break
+					}
+				}
+			}
 			base = append(base, st)
 		}
 		if req.Mode == "ui" {
