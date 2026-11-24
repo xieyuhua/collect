@@ -1398,14 +1398,15 @@ func (c *runCtx) uiStepStarter() func(i int, s model.UIStep) {
 	}
 }
 
-// uiStepLabel 生成步骤日志里显示的短描述（优先用录制时记录的 desc）
+// uiStepLabel 生成步骤日志里显示的短描述（优先用录制时记录的 desc）。
+// desc 是中文 UTF-8，必须按 rune 截断，按字节截会把汉字切成乱码。
 func uiStepLabel(s model.UIStep) string {
 	desc := s.Desc
 	if desc == "" {
 		desc = s.Action + " " + s.Selector + s.Value
 	}
-	if len(desc) > 40 {
-		desc = desc[:40]
+	if r := []rune(desc); len(r) > 40 {
+		desc = string(r[:40])
 	}
 	return desc
 }

@@ -934,6 +934,7 @@ func actionToStep(a browser.Action) (model.UIStep, bool) {
 	return st, true
 }
 
+// truncate 按 rune 截断（desc 用于日志与界面展示，中文按字节截会乱码）
 func truncate(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

@@ -879,7 +879,8 @@ func (r *Replayer) clickNextByText(p *rod.Page, text string) (bool, error) {
 }
 
 func mapKey(k string) input.Key {
-	switch strings.ToLower(strings.TrimSpace(k)) {
+	k = strings.TrimSpace(k)
+	switch strings.ToLower(k) {
 	case "enter":
 		return input.Enter
 	case "tab":
@@ -894,8 +895,24 @@ func mapKey(k string) input.Key {
 		return input.ArrowDown
 	case "arrowup", "up":
 		return input.ArrowUp
+	case "arrowleft", "left":
+		return input.ArrowLeft
+	case "arrowright", "right":
+		return input.ArrowRight
+	case "delete", "del":
+		return input.Delete
+	case "home":
+		return input.Home
+	case "end":
+		return input.End
+	case "pageup":
+		return input.PageUp
+	case "pagedown":
+		return input.PageDown
 	}
-	if len(k) == 1 {
+	// 注意：必须在 TrimSpace 之后再判断单字符，否则「 a 」这类带空格
+	// 输入会落不进单字符分支，静默退化成 Enter 触发了错误的按键。
+	if len([]rune(k)) == 1 {
 		return input.Key(k[0])
 	}
 	return input.Enter
