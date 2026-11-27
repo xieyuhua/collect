@@ -217,10 +217,11 @@ func (m *Manager) Capture(id string) (map[string]any, error) {
 		})
 	}
 	return map[string]any{
-		"session":    s.Info(),
-		"requests":   list,
-		"actions":    s.rec.Actions(),
-		"candidates": dataCandidates(reqs),
+		"session":     s.Info(),
+		"requests":    list,
+		"actions":     s.rec.Actions(),
+		"diagnostics": s.rec.Diagnostics(),
+		"candidates":  dataCandidates(reqs),
 	}, nil
 }
 

@@ -93,6 +93,8 @@
       const session = C.reactive({});
       const requests = C.reactive([]);
       const actions = C.reactive([]);
+      const diagnostics = C.reactive([]);
+      const showDiag = C.ref(false);
       const jsonOnly = C.ref(true);
       const keyword = C.ref('');
       const selReq = C.ref('');
@@ -121,6 +123,7 @@
           Object.assign(session, d.session || {});
           requests.splice(0, requests.length, ...(d.requests || []));
           actions.splice(0, actions.length, ...(d.actions || []));
+          diagnostics.splice(0, diagnostics.length, ...(d.diagnostics || []));
           candidates.splice(0, candidates.length, ...(d.candidates || []));
           // 首次加载时默认勾选最像数据列表的那个接口
           if (!draft.list_req_ids.length && candidates.length) {
@@ -354,6 +357,7 @@
 
       return {
         sessions: sessions, studioId: studioId, session: session, requests: requests, actions: actions,
+        diagnostics: diagnostics, showDiag: showDiag,
         draftNotes: draftNotes,
         jsonOnly: jsonOnly, keyword: keyword, selReq: selReq, starting: starting, draft: draft, form: form,
         filtered: filtered, jsonReqs: jsonReqs, candidates: candidates, draftKw: draftKw,
@@ -463,7 +467,19 @@
               <p class="hint">点击请求可查看完整请求头、请求体、响应头与响应体。</p>
             </div>
             <div>
-              <h4 style="margin:0 0 8px">页面动作</h4>
+              <h4 style="margin:0 0 8px">页面动作
+                <span class="hint">已录 {{ actions.length }} 条 · 诊断事件 {{ diagnostics.length }} 条</span>
+                <button v-if="diagnostics.length" class="btn sm ghost" style="margin-left:8px;padding:0 6px"
+                        data-act="studio-diag" @click="showDiag = !showDiag">{{ showDiag ? '收起诊断' : '录制诊断' }}</button>
+              </h4>
+              <div v-if="showDiag" class="pre" style="max-height:200px;overflow:auto;margin-bottom:8px">
+                <div v-for="(d, i) in diagnostics.slice(-80)" :key="i">
+                  {{ timeHMS(d.at) }} [{{ d.ev }}] &lt;{{ d.tag }}&gt; {{ d.text }}
+                  <span v-if="d.rec" style="color:#2f7d32">→ {{ d.rec }}</span>
+                  <span v-else style="color:#c43239">→ 跳过:{{ d.skip }}</span>
+                  <span v-if="d.frame" style="color:#888"> (frame {{ d.frame }})</span>
+                </div>
+              </div>
               <div class="timeline" style="max-height:460px;overflow:auto">
                 <div v-if="!actions.length" class="hint">暂无页面动作</div>
                 <div v-for="(a, i) in actions" :key="i" class="tl-item" :class="a.type">

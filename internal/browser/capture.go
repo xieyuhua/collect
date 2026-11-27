@@ -58,6 +58,19 @@ type Action struct {
 // debugDrain 打开后会把 iframe 动作抓取的诊断信息打到 stderr（COLLECT_DEBUG_DRAIN=1）
 var debugDrain = os.Getenv("COLLECT_DEBUG_DRAIN") != ""
 
+// DiagItem 录制诊断：记录每次点击/按下事件及其处理结果，用于排查「点了却没录到」
+type DiagItem struct {
+	At      int64  `json:"at"`
+	Ev      string `json:"ev"`            // click | mousedown
+	Tag     string `json:"tag"`           // 原始目标标签
+	Text    string `json:"text"`          // 原始目标文字
+	Rec     string `json:"rec,omitempty"` // 录制成的动作类型（空=未录）
+	Sel     string `json:"sel,omitempty"`
+	Trigger string `json:"trigger,omitempty"`
+	Skip    string `json:"skip,omitempty"` // 跳过原因
+	Frame   string `json:"frame,omitempty"`
+}
+
 type Recorder struct {
 	page    *rod.Page
 	maxBody int
@@ -71,6 +84,7 @@ type Recorder struct {
 	index    map[string]*CapRequest
 	seq      int
 	actions  []Action
+	diag     []DiagItem
 	navURL   string
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -347,11 +361,11 @@ func (r *Recorder) drainActions(wait time.Duration) {
 		got := false
 		evalLocked(f.Page, wait, func(p *rod.Page) {
 			res, err := p.Timeout(4 * time.Second).Eval(`() => {
-				if (!window.__rec) return '[]';
-				const a = window.__rec;
-				window.__rec = [];
-				try { sessionStorage.setItem('__collect_actions', '[]'); } catch (e) {}
-				return JSON.stringify(a);
+				const out = { actions: [], diag: [] };
+				if (window.__rec) { out.actions = window.__rec; window.__rec = []; }
+				if (window.__diag) { out.diag = window.__diag; window.__diag = []; }
+				try { sessionStorage.setItem('__collect_actions', '[]'); sessionStorage.setItem('__collect_diag', '[]'); } catch (e) {}
+				return JSON.stringify(out);
 			}`)
 			if err != nil || res == nil {
 				evalErr = err
@@ -365,13 +379,31 @@ func (r *Recorder) drainActions(wait time.Duration) {
 			}
 			continue
 		}
-		if debugDrain && strings.TrimSpace(raw) != "[]" {
+		if debugDrain && strings.TrimSpace(raw) != "{}" {
 			fmt.Fprintf(os.Stderr, "[drain] frame=%q raw=%s\n", f.Sel, raw)
 		}
-		var list []Action
-		if json.Unmarshal([]byte(raw), &list) != nil {
+		var payload struct {
+			Actions []Action   `json:"actions"`
+			Diag    []DiagItem `json:"diag"`
+		}
+		if json.Unmarshal([]byte(raw), &payload) != nil {
 			continue
 		}
+		// 累积诊断（带上来源 frame）
+		if len(payload.Diag) > 0 {
+			r.mu.Lock()
+			for _, d := range payload.Diag {
+				if d.Frame == "" {
+					d.Frame = f.Sel
+				}
+				r.diag = append(r.diag, d)
+			}
+			if len(r.diag) > 500 {
+				r.diag = r.diag[len(r.diag)-500:]
+			}
+			r.mu.Unlock()
+		}
+		list := payload.Actions
 		if len(list) == 0 {
 			continue
 		}
@@ -451,9 +483,22 @@ func (r *Recorder) Actions() []Action {
 	return out
 }
 
+// Diagnostics 返回录制诊断（每次点击/按下的原始目标与处理结果）
+func (r *Recorder) Diagnostics() []DiagItem {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]DiagItem, len(r.diag))
+	copy(out, r.diag)
+	return out
+}
+
 const recordJS = `() => {
-  if (window.__recordInstalled) return true;
+  // 版本号：脚本逻辑更新后，页面里若还是旧版注入（SPA 未刷新/热更新），
+  // 必须重装，否则用户「改了代码却还不行」。改录制逻辑时递增此版本。
+  const REC_VERSION = 3;
+  if (window.__recordInstalled && window.__recordVersion === REC_VERSION) return true;
   window.__recordInstalled = true;
+  window.__recordVersion = REC_VERSION;
   // 动作写 sessionStorage：录制中页面跳转时新文档会重新注入脚本，
   // 上一页还没来得及被轮询取走的动作（典型是「选完下拉立刻跳转」）不会丢。
   const STORE = '__collect_actions';
@@ -469,6 +514,20 @@ const recordJS = `() => {
     try { sessionStorage.setItem(STORE, JSON.stringify(window.__rec)); } catch (e) {}
   };
   const push = (o) => { try { window.__rec.push(o); persist(); } catch (e) {} };
+  // 诊断：记录每一次点击/按下的原始目标（tag/文字/是否被转成动作），
+  // 供工作台「录制诊断」查看，解决「明明点了却没录到」的排查。
+  const DIAG = '__collect_diag';
+  window.__diag = (function () {
+    try { const r = sessionStorage.getItem(DIAG); const a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  })();
+  const diag = (o) => {
+    try {
+      o.at = Date.now();
+      window.__diag.push(o);
+      if (window.__diag.length > 300) window.__diag = window.__diag.slice(-300);
+      sessionStorage.setItem(DIAG, JSON.stringify(window.__diag));
+    } catch (e) {}
+  };
   const cpath = (el) => {
     if (!el || el.nodeType !== 1) return '';
     try {
@@ -558,22 +617,32 @@ const recordJS = `() => {
   document.addEventListener('mousedown', (ev) => {
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
     if (!el) return;
-    if (!selectableItem(el)) return;
+    const rawTag = (el.tagName || '').toLowerCase();
+    const rawText = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!selectableItem(el)) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'not-item' }); return; }
+    // 必须在「浮层」里（绝对/固定定位容器、且非 body）。不强制要求
+    // 「刚刚点过触发器」——组件库可能在 mousedown 提交并立即移除元素，
+    // 也可能用户点开触发器后隔了一会儿才选；宁可多记，由生成层去重。
     const layer = popupLayer(el);
-    if (!layer) return;
-    // 弹层必须是刚刚点击才打开的（Element / AntD 的选择器会在 mousedown 时
-    // 提交并关闭，且很多组件库用 mousedown + 立即移除元素，click 不会触发）。
-    const openedByClick = lastClickEl && Date.now() - lastClickAt < 2500 &&
-      !layer.contains(lastClickEl) && !lastClickEl.contains(layer);
-    if (!openedByClick) return;
+    if (!layer) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'no-layer' }); return; }
+    // 触发器：优先用最近点击的元素；没有则回退到浮层的「兄弟/前序」可点元素。
+    let triggerEl = lastClickEl;
+    let trigger = triggerEl ? cpath(triggerEl) : '';
+    if (!trigger) {
+      // 找浮层容器外的、最近的可见可点元素作为触发器（组件库常见：弹层与
+      // 触发器同级挂在 body 下）。这里简单回退到 body 前一个兄弟。
+      const sib = layer.previousElementSibling;
+      if (sib && selectableItem(sib)) { triggerEl = sib; trigger = cpath(sib); }
+    }
     const o = stamp(info(el));
     o.type = 'select';
     o.value = optionValue(el);
-    o.trigger = cpath(lastClickEl);
-    const tv = ((lastClickEl.innerText || lastClickEl.value || '') + '').trim().slice(0, 120);
+    if (trigger) o.trigger = trigger;
+    const tv = triggerEl ? ((triggerEl.innerText || triggerEl.value || '') + '').trim().slice(0, 120) : '';
     // 注意：字段名必须是 trigger_text，与 Go 端 Action.TriggerText 的 json tag 一致；
     // 写成驼峰 triggerText 会被反序列化静默丢弃
     if (tv) o.trigger_text = tv;
+    diag({ ev: 'mousedown', tag: rawTag, text: rawText, rec: 'select', sel: o.selector, trigger: o.trigger || '' });
     push(o);
     // 这次 mousedown 已经提交了选择：紧随其后的 click（若还触发）不再重复记录
     suppressClickEl = el; suppressClickUntil = Date.now() + 900;
@@ -582,17 +651,30 @@ const recordJS = `() => {
   document.addEventListener('click', (ev) => {
     let el = ev.target;
     if (!el || el.nodeType !== 1) return;
+    const rawTag = (el.tagName || '').toLowerCase();
+    const rawText = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim().slice(0, 40);
     // 已被 mousedown 记成 select 的同一次操作，跳过避免重复
     if (suppressClickEl && Date.now() < suppressClickUntil &&
       (el === suppressClickEl || suppressClickEl.contains(el) || el.contains(suppressClickEl))) {
+      diag({ ev: 'click', tag: rawTag, text: rawText, skip: 'dup-select' });
       return;
     }
+    // 记录策略：尽量不丢。只跳过「纯文本输入框/多行文本」这类点击没有意义的元素，
+    // 其余一律记录（用户要求「所有页面动作都要记录」）。是否转成步骤由生成层决定。
     const tag = (el.tagName || '').toLowerCase();
-    if (tag === 'input' && (el.type === 'text' || el.type === 'password' || el.type === 'number' || el.type === 'search' || el.type === 'email')) return;
-    if (tag === 'textarea') return;
-    el = el.closest('button,a,[role=button],input,select,textarea,label,li,td,th,img,span,i') || el;
+    const ty = (el.type || '').toLowerCase();
+    const textInput = tag === 'input' &&
+      (ty === 'text' || ty === 'password' || ty === 'number' || ty === 'search' || ty === 'email' || ty === '' || ty === 'tel' || ty === 'url');
+    if (textInput || tag === 'textarea') {
+      diag({ ev: 'click', tag: rawTag, text: rawText, skip: 'text-input' });
+      return;
+    }
+    // 优先上溯到可点击语义元素（按钮/链接/选项等），拿不到就用原始 target。
+    // 注意：li 必须在候选里，否则下拉选项会被 closest 成外层容器。
+    el = el.closest('button,a,[role=button],[role=option],[role=menuitem],[role=treeitem],input,select,textarea,label,li,dd,option,td,th,img,span,i') || el;
     lastClickEl = el; lastClickAt = Date.now();
     const o = stamp(info(el)); o.type = 'click'; o.x = ev.clientX; o.y = ev.clientY;
+    diag({ ev: 'click', tag: rawTag, text: rawText, rec: o.type, sel: o.selector });
     push(o);
   }, true);
   const timers = new WeakMap();
