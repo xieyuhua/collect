@@ -422,18 +422,26 @@ func (r *Replayer) pickCustomOption(p *rod.Page, s model.UIStep) (bool, error) {
 			// 弹层的常见位置：触发器的父组件根（relative 容器）或它本身的可视浮层
 			let cur = triggerEl.parentElement, depth = 0;
 			while (cur && cur !== document.body && depth < 4) {
-				// 找到触发器所在的定位/组件根即可（弹层一般作为兄弟节点挂在此根内）
 				const cs = getComputedStyle(cur);
 				if (cs.position === 'relative' || cs.position === 'absolute' || cs.position === 'fixed') { root = cur; break; }
 				cur = cur.parentElement; depth++;
 			}
 			if (!root) root = triggerEl.parentElement; // 兜底：父元素
 		}
-		const inPopup = (el) => !!root && root !== el && root.contains(el) && el !== triggerEl;
+		// 组件库常把下拉弹层 portal 到 <body> 末尾，此时组件根 root 里并没有
+		// 选项。判断方法：root 内是否存在「可见的小元素候选」；没有则视为
+		// portal 场景，退化为全页搜索（弹层已展开，候选数量可控）。
 		const explicit = '[role=option],[role=menuitem],[role=treeitem],li,dd,option,.el-select-dropdown__item,.ant-select-item-option,.item,.option,.opt';
 		const bare = 'span,a,p,div';
 		const baseFilter = (el) => visible(el) && norm(el.innerText).length > 0 && norm(el.innerText).length <= 80;
 		const explicitEls = Array.from(document.querySelectorAll(explicit)).filter(baseFilter);
+		const rootHasOption = !!root && explicitEls.some((el) => root.contains(el) && el !== triggerEl);
+		const inPopup = (el) => {
+			if (!root || el === triggerEl) return false;
+			if (root.contains(el)) return true;
+			// portal 到 body 的弹层：只要在页面可见即可（弹层已展开）
+			return !rootHasOption && visible(el);
+		};
 		const bareEls = Array.from(document.querySelectorAll(bare)).filter((el) => baseFilter(el) && inPopup(el));
 		const cands = explicitEls.concat(bareEls);
 		let hit = null;

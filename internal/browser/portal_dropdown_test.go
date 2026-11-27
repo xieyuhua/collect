@@ -49,6 +49,65 @@ document.addEventListener('click', function () { list.classList.remove('show'); 
 </body></html>`
 
 // portal 到 body 的下拉：录制 + 回放都必须选中 li。
+// portal 到 body 且选项是裸 span（无 data/role）：回放也必须能选中，
+// 不能因为组件根里找不到选项就放弃。
+const portalBareSpanHTML = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>portal 裸 span</title>
+<style>
+.pg { display:inline-block; padding:4px 12px; border:1px solid #ccc; cursor:pointer; }
+.pg-panel { position:absolute; z-index:9999; background:#fff; border:1px solid #ccc; display:none; }
+.pg-panel.on { display:block; }
+.pg-panel .cell { display:block; padding:5px 18px; cursor:pointer; }
+</style></head>
+<body>
+<button id="pgBtn" class="pg">每页 20 条</button>
+<div id="state">20</div>
+<script>
+var panel = document.createElement('div');
+panel.className = 'pg-panel';
+['10','20','50'].forEach(function (v) {
+  var cell = document.createElement('span');   // 裸 span，无任何属性
+  cell.className = 'cell';
+  cell.textContent = v + ' 条/页';
+  cell.addEventListener('click', function () {
+    document.getElementById('state').textContent = v;
+    panel.classList.remove('on');
+  });
+  panel.appendChild(cell);
+});
+document.body.appendChild(panel);   // portal 到 body
+document.getElementById('pgBtn').addEventListener('click', function (e) {
+  e.stopPropagation();
+  var r = this.getBoundingClientRect();
+  panel.style.left = r.left + 'px';
+  panel.style.top = (r.bottom + window.scrollY) + 'px';
+  panel.classList.toggle('on');
+});
+</script>
+</body></html>`
+
+func TestReplayPortalBareSpanOption(t *testing.T) {
+	page, cleanup := testBrowser(t)
+	defer cleanup()
+	srv := serveHTML(t, map[string]string{"/": portalBareSpanHTML})
+	if err := page.Navigate(srv.URL); err != nil {
+		t.Fatalf("打开页面失败: %v", err)
+	}
+	_ = page.WaitLoad()
+
+	rep := NewReplayer(page, 256, nil)
+	step := model.UIStep{
+		Action: "select", Trigger: "#pgBtn", TriggerText: "每页 20 条",
+		Text: "50 条/页", Value: "50 条/页",
+	}
+	if err := rep.Do(step); err != nil {
+		t.Fatalf("回放 portal 裸 span 失败: %v", err)
+	}
+	got, _ := page.Eval(`() => document.getElementById('state').textContent`)
+	if got.Value.Str() != "50" {
+		t.Fatalf("回放后状态 = %s，期望 50", got.Value.Str())
+	}
+}
+
 func TestPortalDropdownRecordAndReplay(t *testing.T) {
 	page, cleanup := testBrowser(t)
 	defer cleanup()

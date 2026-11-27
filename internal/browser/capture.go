@@ -364,7 +364,13 @@ func (r *Recorder) drainActions(wait time.Duration) {
 				const out = { actions: [], diag: [] };
 				if (window.__rec) { out.actions = window.__rec; window.__rec = []; }
 				if (window.__diag) { out.diag = window.__diag; window.__diag = []; }
-				try { sessionStorage.setItem('__collect_actions', '[]'); sessionStorage.setItem('__collect_diag', '[]'); } catch (e) {}
+				// 只清顶层文档的持久化存储：同源 iframe 与父页面共享 sessionStorage，
+				// 在 iframe 里清空会把父页面尚未取走的动作一起删掉。
+				let isTop = false;
+				try { isTop = window.top === window; } catch (e) { isTop = false; }
+				if (isTop) {
+					try { sessionStorage.setItem('__collect_actions', '[]'); sessionStorage.setItem('__collect_diag', '[]'); } catch (e) {}
+				}
 				return JSON.stringify(out);
 			}`)
 			if err != nil || res == nil {
@@ -499,33 +505,37 @@ const recordJS = `() => {
   if (window.__recordInstalled && window.__recordVersion === REC_VERSION) return true;
   window.__recordInstalled = true;
   window.__recordVersion = REC_VERSION;
-  // 动作写 sessionStorage：录制中页面跳转时新文档会重新注入脚本，
-  // 上一页还没来得及被轮询取走的动作（典型是「选完下拉立刻跳转」）不会丢。
+  // 动作持久化：仅「顶层主文档」使用 sessionStorage，用于录制中页面跳转
+  // 时新文档重新注入脚本后不丢上一页未取走的动作。
+  // 关键限制：同源 iframe 与父页面共享同一个 sessionStorage，若 iframe 也
+  // 读写它会互相覆盖（父页面 drain 清空 → iframe 动作丢失；iframe 读到父页面
+  // 动作 → 重复）。因此 iframe 内只用内存数组（其生命周期跟随该文档）。
+  const isTop = (function () { try { return window.top === window; } catch (e) { return false; } })();
   const STORE = '__collect_actions';
-  const load = () => {
+  const DIAG = '__collect_diag';
+  const loadStore = (key) => {
+    if (!isTop) return [];
     try {
-      const raw = sessionStorage.getItem(STORE);
+      const raw = sessionStorage.getItem(key);
       const a = raw ? JSON.parse(raw) : [];
       return Array.isArray(a) ? a : [];
     } catch (e) { return []; }
   };
-  window.__rec = load();
+  window.__rec = loadStore(STORE);
   const persist = () => {
+    if (!isTop) return;
     try { sessionStorage.setItem(STORE, JSON.stringify(window.__rec)); } catch (e) {}
   };
   const push = (o) => { try { window.__rec.push(o); persist(); } catch (e) {} };
   // 诊断：记录每一次点击/按下的原始目标（tag/文字/是否被转成动作），
   // 供工作台「录制诊断」查看，解决「明明点了却没录到」的排查。
-  const DIAG = '__collect_diag';
-  window.__diag = (function () {
-    try { const r = sessionStorage.getItem(DIAG); const a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
-  })();
+  window.__diag = loadStore(DIAG);
   const diag = (o) => {
     try {
       o.at = Date.now();
       window.__diag.push(o);
       if (window.__diag.length > 300) window.__diag = window.__diag.slice(-300);
-      sessionStorage.setItem(DIAG, JSON.stringify(window.__diag));
+      if (isTop) sessionStorage.setItem(DIAG, JSON.stringify(window.__diag));
     } catch (e) {}
   };
   const cpath = (el) => {
@@ -608,27 +618,40 @@ const recordJS = `() => {
       ty === 'search' || ty === 'email' || ty === 'tel' || ty === 'url' || ty === 'checkbox' || ty === 'radio' || ty === 'file' || ty === 'range';
   };
   // popupKind 判断浮层是不是「下拉弹层」而非页面常驻布局。
-  // 页面常驻的 fixed/absolute 容器（侧边菜单、吸顶导航、表单的 relative 区）
-  // 里点 li/div 是普通点击，不能算下拉选择。
+  // 页面常驻的 fixed/absolute 容器（侧边菜单、吸顶导航、表单区）里点
+  // li/div 是普通点击，不能算下拉选择。
   //
-  // 最可靠的信号是「时机」：下拉弹层是点击触发器之后才出现的。
-  // 因此点击时给当时可见的定位容器打快照（__collect_shownLayers），
-  // mousedown 时如果 layer 不在快照里，说明它是这次点击后才显示的 → 弹层。
-  // 另外 class/role 带下拉语义、或直接挂在 body 下的 portal 也认定为弹层。
-  let shownLayers = null; // WeakSet：点击前就「已可见」的定位容器
-  const snapshotLayers = () => {
-    const set = new WeakSet();
-    const all = document.querySelectorAll('*');
-    for (let i = 0; i < all.length; i++) {
-      const e = all[i];
+  // 判定依据（按可靠度）：
+  //  1. class/role 带下拉语义 → 直接认定弹层
+  //  2. 直接挂在 body 下的 portal 浮层 → 弹层
+  //  3. 「出现时机」：首次观测到该浮层可见的时间晚于最近一次点击
+  //     （说明它是用户点击后才打开的）→ 弹层
+  // seenAt 用 WeakMap 记录每个定位容器「第一次被看到可见」的时刻，
+  // 在每次 mousedown / click 的 capture 阶段刷新。
+  const layerSeenAt = new WeakMap();
+  const isShown = (e) => {
+    const cs = getComputedStyle(e);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) !== 0 && !e.hidden;
+  };
+  // scanLayers 刷新「定位容器首次可见时间」。
+  // 性能：只对本次事件的 target 及其祖先链做标记（O(深度)），
+  // 外加对 body 直接子级做一次扫描（portal 弹层挂在这里），
+  // 避免对整页元素逐个 getComputedStyle。
+  const scanLayers = (target) => {
+    const now = Date.now();
+    const visit = (e) => {
+      if (!e || e.nodeType !== 1) return;
       const cs = getComputedStyle(e);
-      if (cs.position !== 'absolute' && cs.position !== 'fixed') continue;
-      // 只记「当前可见」的：隐藏的弹层（display:none）不在快照里，
-      // 这样它被点开后再 mousedown 会被正确判成「新出现的弹层」。
-      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
-      set.add(e);
-    }
-    shownLayers = set;
+      if (cs.position !== 'absolute' && cs.position !== 'fixed') return;
+      if (!isShown(e)) { layerSeenAt.delete(e); return; }
+      if (!layerSeenAt.has(e)) layerSeenAt.set(e, now);
+    };
+    // target 祖先链
+    let cur = target;
+    while (cur && cur !== document.documentElement) { visit(cur); cur = cur.parentElement; }
+    // body 直接子级（portal 弹层）
+    const kids = document.body ? document.body.children : [];
+    for (let i = 0; i < kids.length && i < 300; i++) visit(kids[i]);
   };
   const popupKind = (layer) => {
     const cls = String(layer.className || '');
@@ -636,8 +659,9 @@ const recordJS = `() => {
     if (/dropdown|popover|popup|select|picker|options|combo|listbox|popper/i.test(cls) ||
         /listbox|menu|dialog/i.test(role)) return 'dropdown';
     if (layer.parentElement === document.body) return 'portal';
-    // 点击前不存在 / 不可见，点击后才出现 → 弹层
-    if (shownLayers && !shownLayers.has(layer)) return 'opened';
+    // 首次可见时间晚于最近一次点击 → 点击后才打开
+    const seen = layerSeenAt.get(layer);
+    if (seen && lastClickAt && seen >= lastClickAt) return 'opened';
     return '';
   };
   // optionRule 判断元素是否是「候选选项」。
@@ -658,6 +682,9 @@ const recordJS = `() => {
       tag === 'div' || tag === 'p' || tag === 'em' || tag === 'strong';
   };
   document.addEventListener('mousedown', (ev) => {
+    // capture 阶段、组件库 handler 之前：刷新各定位容器的「首次可见时间」，
+    // 保证本次 mousedown 判定用的是事件发生前的观测状态。
+    scanLayers(ev.target);
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
     if (!el) return;
     const rawTag = (el.tagName || '').toLowerCase();
@@ -694,10 +721,9 @@ const recordJS = `() => {
     lastClickEl = null; lastClickAt = 0;
   }, true);
   document.addEventListener('click', (ev) => {
-    // 在 capture 阶段、触发器自身 handler 打开弹层之前，快照当前存在的
-    // 定位容器。之后 mousedown 时若 layer 不在快照里 → 它是这次点击后
-    // 才出现的（下拉弹层），否则是页面常驻布局（菜单/表单区）。
-    snapshotLayers();
+    // 同步刷新可见层时间戳：click 阶段弹层可能已展开（触发器自身 handler 已跑），
+    // 此时记录的 seenAt 会晚于 lastClickAt，下一次 mousedown 判定为「新弹层」。
+    scanLayers(ev.target);
     let el = ev.target;
     if (!el || el.nodeType !== 1) return;
     const rawTag = (el.tagName || '').toLowerCase();
