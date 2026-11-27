@@ -536,17 +536,34 @@ const recordJS = `() => {
   };
   // 最近一次点击：用于确认「弹层是这次点击才打开的」
   let lastClickEl = null, lastClickAt = 0;
+  // 抑制标记：mousedown 已把某元素记成 select 后，紧随其后的 click 不再重复记录
+  let suppressClickEl = null, suppressClickUntil = 0;
   // seq：给动作一个单调序号，drain 时按它去重/合并
   let seq = 0;
   const stamp = (o) => { seq += 1; o.k = seq; return o; };
+  // selectableItem 判断元素是否可能是一个「可选项」。
+  // 宽松策略（用户要求「所有页面动作都要记录」）：显式选项语义优先，
+  // 但裸 li/dd/option、或短的 span/a/div/p 文本也可能是不带 data 属性的
+  // 组件库选项——只要它在「刚点开的浮层」里，就当选项记录。
+  const selectableItem = (el) => {
+    if (optionLooksLike(el)) return true;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'li' || tag === 'dd' || tag === 'option') return true;
+    if (tag === 'span' || tag === 'a' || tag === 'div' || tag === 'p' || tag === 'em' || tag === 'strong') {
+      const t = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+      return t.length > 0 && t.length <= 60;
+    }
+    return false;
+  };
   document.addEventListener('mousedown', (ev) => {
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
     if (!el) return;
-    if (!optionLooksLike(el)) return;
+    if (!selectableItem(el)) return;
     const layer = popupLayer(el);
     if (!layer) return;
-    // 弹层必须是刚刚点击才出现的（Element / AntD 的选择器会在 mousedown 时提交并关闭）
-    const openedByClick = lastClickEl && Date.now() - lastClickAt < 2000 &&
+    // 弹层必须是刚刚点击才打开的（Element / AntD 的选择器会在 mousedown 时
+    // 提交并关闭，且很多组件库用 mousedown + 立即移除元素，click 不会触发）。
+    const openedByClick = lastClickEl && Date.now() - lastClickAt < 2500 &&
       !layer.contains(lastClickEl) && !lastClickEl.contains(layer);
     if (!openedByClick) return;
     const o = stamp(info(el));
@@ -558,21 +575,22 @@ const recordJS = `() => {
     // 写成驼峰 triggerText 会被反序列化静默丢弃
     if (tv) o.trigger_text = tv;
     push(o);
-    // 这次 mousedown 已经提交了选择，后续同一次操作的 click（如果还有）不应再录成点击
+    // 这次 mousedown 已经提交了选择：紧随其后的 click（若还触发）不再重复记录
+    suppressClickEl = el; suppressClickUntil = Date.now() + 900;
     lastClickEl = null; lastClickAt = 0;
   }, true);
   document.addEventListener('click', (ev) => {
     let el = ev.target;
     if (!el || el.nodeType !== 1) return;
+    // 已被 mousedown 记成 select 的同一次操作，跳过避免重复
+    if (suppressClickEl && Date.now() < suppressClickUntil &&
+      (el === suppressClickEl || suppressClickEl.contains(el) || el.contains(suppressClickEl))) {
+      return;
+    }
     const tag = (el.tagName || '').toLowerCase();
     if (tag === 'input' && (el.type === 'text' || el.type === 'password' || el.type === 'number' || el.type === 'search' || el.type === 'email')) return;
     if (tag === 'textarea') return;
     el = el.closest('button,a,[role=button],input,select,textarea,label,li,td,th,img,span,i') || el;
-    // 选项上的 click 已经由 mousedown 录成 select 动作，跳过避免重复
-    if (optionLooksLike(el)) {
-      const layer = popupLayer(el);
-      if (layer) return;
-    }
     lastClickEl = el; lastClickAt = Date.now();
     const o = stamp(info(el)); o.type = 'click'; o.x = ev.clientX; o.y = ev.clientY;
     push(o);

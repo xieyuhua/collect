@@ -392,32 +392,69 @@ func (r *Replayer) pickCustomOption(p *rod.Page, s model.UIStep) (bool, error) {
 			}
 			return norm(el.innerText);
 		};
-		const visible = (el) => {
-			const r = el.getBoundingClientRect();
-			const cs = getComputedStyle(el);
-			return r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0';
+		// 可见性：递归向上检查所有祖先的 display/visibility/opacity，
+		// 穿透 display:none 的弹层容器（CSS 隐藏弹层里子元素的
+		// getBoundingClientRect 有时仍非零，checkVisibility 各版本行为也不一致）。
+		const hiddenAncestor = (el) => {
+			let cur = el;
+			while (cur && cur.nodeType === 1) {
+				const cs = getComputedStyle(cur);
+				if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return true;
+				cur = cur.parentElement;
+			}
+			return false;
 		};
-		const cands = Array.from(document.querySelectorAll(
-			'[role=option],[role=menuitem],[role=treeitem],li,dd,.el-select-dropdown__item,.ant-select-item-option,option'
-		));
+		const visible = (el) => {
+			if (!el) return false;
+			const r = el.getBoundingClientRect();
+			if (!(r.width > 0 && r.height > 0)) return false;
+			return !hiddenAncestor(el);
+		};
+		// 候选集分两类：
+		//  1) 显式选项语义（role/组件库类/li/dd/option）——全页可见即可
+		//  2) 裸 span/a/p/div 等无属性选项——只在「弹出层」范围内才算，
+		//     否则页面正文里的普通文字 div 会被误命中。
+		// 弹层范围 = 触发器所在的下拉组件根：从触发器向上，取第一个
+		// 同时包含「触发器」和「其它可见小元素」的容器，最多上溯 4 层。
+		const triggerEl = arg.trigger ? document.querySelector(arg.trigger) : null;
+		let root = null;
+		if (triggerEl) {
+			// 弹层的常见位置：触发器的父组件根（relative 容器）或它本身的可视浮层
+			let cur = triggerEl.parentElement, depth = 0;
+			while (cur && cur !== document.body && depth < 4) {
+				// 找到触发器所在的定位/组件根即可（弹层一般作为兄弟节点挂在此根内）
+				const cs = getComputedStyle(cur);
+				if (cs.position === 'relative' || cs.position === 'absolute' || cs.position === 'fixed') { root = cur; break; }
+				cur = cur.parentElement; depth++;
+			}
+			if (!root) root = triggerEl.parentElement; // 兜底：父元素
+		}
+		const inPopup = (el) => !!root && root !== el && root.contains(el) && el !== triggerEl;
+		const explicit = '[role=option],[role=menuitem],[role=treeitem],li,dd,option,.el-select-dropdown__item,.ant-select-item-option,.item,.option,.opt';
+		const bare = 'span,a,p,div';
+		const baseFilter = (el) => visible(el) && norm(el.innerText).length > 0 && norm(el.innerText).length <= 80;
+		const explicitEls = Array.from(document.querySelectorAll(explicit)).filter(baseFilter);
+		const bareEls = Array.from(document.querySelectorAll(bare)).filter((el) => baseFilter(el) && inPopup(el));
+		const cands = explicitEls.concat(bareEls);
 		let hit = null;
 		if (arg.sel) {
 			try {
 				const direct = document.querySelector(arg.sel);
-				// 直接命中的元素必须自己带选项语义，避免把「包含全部选项文字的容器」当成选项
-				const optionish = direct && ['li','dd','option'].includes((direct.tagName||'').toLowerCase())
-					|| direct && ['option','menuitem','treeitem'].includes((direct.getAttribute('role')||'').toLowerCase())
-					|| direct && !!(direct.getAttribute('data-value') || direct.getAttribute('data-v') || direct.getAttribute('data-val'));
-				if (direct && optionish && visible(direct) && (val === '' || valOf(direct) === val || norm(direct.innerText) === txt || norm(direct.innerText).indexOf(txt) >= 0)) {
+				// 直接命中的元素：只要可见且文字/值与目标匹配即可（裸 span 也接受），
+				// 但要求它本身是「叶子级」小元素，避免点到包含全部选项的容器。
+				const small = direct && norm(direct.innerText).length <= 80;
+				if (direct && visible(direct) && small &&
+					(val === '' || valOf(direct) === val || norm(direct.innerText) === txt || norm(direct.innerText).includes(txt))) {
 					hit = direct;
 				}
 			} catch (e) {}
 		}
 		if (!hit) {
 			const find = (pred) => cands.find((el) => visible(el) && pred(el));
-			hit = find((el) => val !== '' && valOf(el) === val) ||
-			      find((el) => txt !== '' && norm(el.innerText) === txt) ||
-			      find((el) => txt !== '' && norm(el.innerText).indexOf(txt) >= 0);
+			// 文字精确匹配优先（最可靠），其次 value 属性，最后包含匹配
+			hit = find((el) => txt !== '' && norm(el.innerText) === txt) ||
+			      find((el) => val !== '' && valOf(el) === val) ||
+			      find((el) => txt !== '' && norm(el.innerText).includes(txt));
 		}
 		if (!hit) return '';
 		// 用真实鼠标事件序列，覆盖只在 mousedown 提交的组件库
@@ -430,7 +467,7 @@ func (r *Replayer) pickCustomOption(p *rod.Page, s model.UIStep) (bool, error) {
 		hit.dispatchEvent(mk('mouseup', MouseEvent));
 		hit.dispatchEvent(mk('click', MouseEvent));
 		return norm(hit.innerText) || valOf(hit);
-	}`, map[string]any{"val": s.Value, "txt": txt, "sel": optSel})
+	}`, map[string]any{"val": s.Value, "txt": txt, "sel": optSel, "trigger": strings.TrimSpace(s.Trigger)})
 	if err != nil {
 		return false, err
 	}

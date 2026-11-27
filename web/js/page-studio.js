@@ -38,14 +38,37 @@
     props: { js: { type: String, required: true }, action: { type: Object, default: () => ({}) } },
     setup(props) {
       const copied = C.ref(false);
-      async function copy() {
+      // 复制：navigator.clipboard 只在 HTTPS/localhost 可用；
+      // 通过 http://IP:8686 访问时必须用 execCommand 兜底。
+      function fallbackCopy(text) {
         try {
-          await navigator.clipboard.writeText(props.js);
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.top = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          return ok;
+        } catch (e) { return false; }
+      }
+      async function copy() {
+        let ok = false;
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(props.js);
+            ok = true;
+          }
+        } catch (e) { ok = false; }
+        if (!ok) ok = fallbackCopy(props.js);
+        if (ok) {
           copied.value = true;
           setTimeout(() => { copied.value = false; }, 1500);
-        } catch (e) {
-          // 剪贴板不可用时退回手动选择
-          C.toast('复制失败，请手动选中复制', 'warn');
+        } else {
+          C.toast('复制失败：请手动选中上面的代码复制', 'warn');
         }
       }
       return { copied, copy };
@@ -56,7 +79,7 @@
         把下面的代码粘贴到<b>目标页面</b>的浏览器控制台（F12）执行，验证这一步能否选到元素并触发页面反应。
         执行后 console 会打印命中的元素；没命中说明回放也会在这里失败。
       </div>
-      <div class="pre" style="max-height:400px;overflow:auto">{{ js }}</div>
+      <div class="pre" style="max-height:400px;overflow:auto" @click="$event.target.tagName === 'PRE' && (function(n){ const r=document.createRange(); r.selectNodeContents(n); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); })($event.currentTarget)">{{ js }}</div>
       <div class="row" style="margin-top:10px;justify-content:flex-end">
         <button class="btn sm" data-act="action-js-copy" @click="copy">{{ copied ? '已复制 ✓' : '复制代码' }}</button>
       </div>
