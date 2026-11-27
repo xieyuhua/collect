@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -232,14 +233,62 @@ func (r *Replayer) Do(s model.UIStep) error {
 				return nil
 			}
 		}
-		// iframe 内再兜底：用脚本直接触发点击（真实鼠标点击优先级更高，这里只是保命）
-		if (strings.TrimSpace(s.Frame) != "" || r.lastAutoFrame != "") && strings.TrimSpace(s.Selector) != "" {
+		// 脚本兜底（主页面与 iframe 都适用）：与工作台「JS 复现」行为一致——
+		// 原生 querySelector 能命中的元素，说明它在 DOM 里，只是 rod 的
+		// Element 定位（可见性/JIT 校验）没拿到，直接 el.click() 通常有效。
+		// 这能救活动态渲染、被遮挡、或尺寸为 0 的节点（如分页器的 span）。
+		if strings.TrimSpace(s.Selector) != "" {
 			fp := p
 			if el != nil && el.Page() != nil {
 				fp = el.Page()
 			}
-			if res, e := fp.Eval(`(sel) => { const el = document.querySelector(sel); if (!el) return false; el.click(); return true; }`, s.Selector); e == nil && res != nil && res.Value.Bool() {
-				time.Sleep(120 * time.Millisecond)
+			// 轮询最多 8 秒：分页器等控件常在数据返回后才被渲染出来，
+			// 前面步骤的异步请求可能还没完成（element() 的超时未必覆盖到）。
+			deadline := time.Now().Add(8 * time.Second)
+			for {
+				clicked := false
+				if res, e := fp.Eval(`(sel) => {
+					let node = null;
+					try { node = document.querySelector(sel); } catch (e) { return false; }
+					if (!node) return false;
+					try { node.scrollIntoView({block:'center'}); } catch (e) {}
+					try { node.click(); return true; } catch (e) { return false; }
+				}`, s.Selector); e == nil && res != nil && res.Value.Bool() {
+					clicked = true
+				}
+				if clicked {
+					time.Sleep(150 * time.Millisecond)
+					return nil
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				if err := sleepContext(fp.GetContext(), 300*time.Millisecond); err != nil {
+					return err
+				}
+			}
+			// 诊断：把页面上实际存在的相近节点报出来，便于排查选择器失效
+			if res, e := fp.Eval(`(sel) => {
+				const out = { selectorExists: false, idExists: false, sample: [] };
+				try { out.selectorExists = !!document.querySelector(sel); } catch (e) {}
+				const hash = (sel.match(/^#([\w-]+)/) || [])[1];
+				if (hash) {
+					out.idExists = !!document.getElementById(hash);
+					// 打印同前缀的兄弟节点，帮助判断结构是否变化
+					const root = document.getElementById(hash);
+					if (root) out.sample = Array.from(root.children).slice(0, 5).map(c => c.tagName.toLowerCase() + (c.id ? '#'+c.id : '') + (c.className ? '.'+String(c.className).split(' ')[0] : ''));
+					else out.sample = Array.from(document.querySelectorAll('#' + hash + ' *')).slice(0, 5).map(c => c.tagName.toLowerCase());
+				}
+				return JSON.stringify(out);
+			}`, s.Selector); e == nil && res != nil {
+				if r.Log != nil {
+					r.Log.Warn("ui", "第 %s 步定位诊断: %s（选择器: %s）", s.Desc, res.Value.Str(), s.Selector)
+				}
+			}
+		}
+		// 最后兜底：按文字点（选择器已失效但页面文字还在时）
+		if s.Text != "" {
+			if ok, _ := r.clickByText(p, s.Text); ok {
 				return nil
 			}
 		}
@@ -273,16 +322,7 @@ func (r *Replayer) Do(s model.UIStep) error {
 	case "select":
 		return r.doSelect(p, s)
 	case "press":
-		key := mapKey(s.Key)
-		if s.Selector != "" {
-			if el, err := r.element(p, s.Selector, s); err == nil {
-				_ = el.Focus()
-				if kp := el.Page(); kp != nil {
-					return kp.Keyboard.Press(key)
-				}
-			}
-		}
-		return p.Keyboard.Press(key)
+		return r.doPress(p, s)
 	case "wait":
 		ms := s.Ms
 		if ms <= 0 {
@@ -305,6 +345,115 @@ func (r *Replayer) Do(s model.UIStep) error {
 	default:
 		return fmt.Errorf("未知动作: %s", s.Action)
 	}
+}
+
+// doPress 按键动作。
+// 优先用真实按键（与旧版本行为一致，不破坏已能正常工作的任务）。
+// 只有两种情况才降级为脚本兜底：
+//  1. 找不到目标元素
+//  2. 真实按键后页面毫无反应（DOM 指纹 + 请求数都没变化），说明该站点
+//     的查询逻辑没被原生按键触发（组件库拦截了 keydown 等）
+//
+// 这样既不会对正常页面重复触发两次查询，又能覆盖「按键没生效」的场景。
+func (r *Replayer) doPress(p *rod.Page, s model.UIStep) error {
+	key := mapKey(s.Key)
+	if strings.TrimSpace(s.Selector) == "" {
+		return p.Keyboard.Press(key)
+	}
+	el, err := r.element(p, s.Selector, s)
+	if err != nil || el == nil {
+		// 找不到元素：直接脚本兜底
+		if r.pressByScript(p, s) {
+			return nil
+		}
+		return fmt.Errorf("未找到可按键元素: %s", s.Selector)
+	}
+	_ = el.ScrollIntoView()
+	_ = el.Focus()
+	target := p
+	if ep := el.Page(); ep != nil {
+		target = ep
+	}
+	before := r.domAndReqSig(target)
+	if err := target.Keyboard.Press(key); err != nil {
+		if r.pressByScript(target, s) {
+			return nil
+		}
+		return err
+	}
+	// 给页面一点反应时间，然后判断是否有变化
+	time.Sleep(400 * time.Millisecond)
+	if r.domAndReqSig(target) == before {
+		// 页面毫无反应：补一次脚本派发（含表单提交 / 相邻查询按钮）
+		if r.pressByScript(target, s) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// domAndReqSig 返回当前文档的轻量指纹（可见文本长度 + 行数 + 请求数），
+// 用于判断一次按键/点击是否引起页面变化。
+func (r *Replayer) domAndReqSig(p *rod.Page) string {
+	res, err := p.Eval(`() => {
+		const body = document.body;
+		return body ? (body.innerText || '').length + '|' + document.querySelectorAll('*').length : '';
+	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	reqs := 0
+	if r.Rec != nil {
+		reqs = len(r.Rec.Requests())
+	}
+	return res.Value.Str() + "|" + strconv.Itoa(reqs)
+}
+
+// pressByScript 在目标文档里派发完整键盘事件；Enter 再补表单提交或
+// 最近的「查询」按钮点击。仅在真实按键不可用时调用。
+func (r *Replayer) pressByScript(p *rod.Page, s model.UIStep) bool {
+	keyName := strings.TrimSpace(s.Key)
+	if keyName == "" {
+		keyName = "Enter"
+	}
+	res, err := p.Eval(`(arg) => {
+		let node = null;
+		try { node = document.querySelector(arg.sel); } catch (e) {}
+		if (!node) return false;
+		try { node.focus(); } catch (e) {}
+		const codeMap = { Enter: 13, Tab: 9, Escape: 27, ' ': 32, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39 };
+		const kc = codeMap[arg.key] || (arg.key.length === 1 ? arg.key.toUpperCase().charCodeAt(0) : 0);
+		const opt = { key: arg.key, code: arg.key === ' ' ? 'Space' : arg.key, keyCode: kc, which: kc, bubbles: true, cancelable: true };
+		node.dispatchEvent(new KeyboardEvent('keydown', opt));
+		node.dispatchEvent(new KeyboardEvent('keypress', opt));
+		node.dispatchEvent(new KeyboardEvent('keyup', opt));
+		if (arg.key === 'Enter') {
+			const form = node.form || node.closest('form');
+			if (form) {
+				if (form.requestSubmit) { try { form.requestSubmit(); } catch (e) {} }
+				else { try { form.submit(); } catch (e) {} }
+			} else {
+				let btn = null, scope = node;
+				for (let i = 0; i < 5 && scope && !btn; i++) {
+					scope = scope.parentElement;
+					if (!scope) break;
+					const cands = Array.from(scope.querySelectorAll('button,input[type=button],input[type=submit],a[role=button]'))
+						.filter((b) => b !== node);
+					btn = cands.find((b) => /查询|搜索|确定|筛选|search|query|submit/i.test(b.innerText || b.value || '')) || cands[0];
+				}
+				if (btn) { try { btn.click(); } catch (e) {} }
+			}
+		}
+		return true;
+	}`, map[string]any{"sel": s.Selector, "key": keyName})
+	if err != nil {
+		if r.Log != nil {
+			r.Log.Warn("ui", "按键脚本兜底失败: %v", err)
+		}
+		return false
+	}
+	time.Sleep(150 * time.Millisecond)
+	return res != nil && res.Value.Bool()
 }
 
 // doSelect 下拉选择：
