@@ -503,16 +503,27 @@ const recordJS = `() => {
     }
     return ((el.innerText || '') + '').trim().slice(0, 120);
   };
-  // optionLooksLike 判断元素是否带「下拉选项」语义（避免把普通 li 当选项）
+  // optionLooksLike 判断元素是否带「下拉选项」语义。
+  // 关键区分：弹层选项几乎总是数据驱动（data-value/data-v/role=option），
+  // 普通页面的 li（侧边菜单项、列表行）不带这些。裸 li/dd 不能算选项，
+  // 否则 fixed 定位菜单里的点击会被误判成下拉选择。
   const optionLooksLike = (el) => {
     if (!el || el.nodeType !== 1) return false;
     const tag = (el.tagName || '').toLowerCase();
     const role = (el.getAttribute('role') || '').toLowerCase();
-    return tag === 'li' || tag === 'dd' || tag === 'option' ||
-      role === 'option' || role === 'menuitem' || role === 'treeitem' ||
-      !!el.getAttribute('data-value') || !!el.getAttribute('data-v') || !!el.getAttribute('data-val');
+    const hasValue = !!el.getAttribute('data-value') || !!el.getAttribute('data-v') || !!el.getAttribute('data-val');
+    if (hasValue) return true;
+    if (role === 'option' || role === 'menuitem' || role === 'treeitem') return true;
+    // .el-select-dropdown__item 等知名组件库选项类
+    const cls = String(el.className || '');
+    if (/el-select-dropdown__item|ant-select-item-option|pika-option|dropdown-item/i.test(cls)) return true;
+    // 裸 option 永远是选项（在原生 select 里）
+    return tag === 'option';
   };
-  // popupLayer 向上找「浮层容器」：绝对/固定定位且当前可见
+  // popupLayer 向上找「浮层容器」：绝对/固定定位且当前可见。
+  // 注意：这里只回答「元素是否在一个定位容器里」，不再按标签排除
+  // ul/nav/menu——普通菜单点击的防护由 optionLooksLike 完成
+  //（裸 li 不带 data-value/role 不算选项），否则 ul 型弹层会被挡掉。
   const popupLayer = (el) => {
     let cur = el;
     while (cur && cur !== document.body && cur !== document.documentElement) {

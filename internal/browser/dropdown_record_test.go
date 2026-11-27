@@ -20,9 +20,9 @@ const customDropdownHTML = `<!doctype html><html lang="zh"><head><meta charset="
 <div id="sizeDD" class="dd">
   <button id="sizeTrigger" type="button">20 条/页</button>
   <ul class="list">
-    <li data-v="10">10 条/页</li>
-    <li data-v="20">20 条/页</li>
-    <li data-v="50">50 条/页</li>
+    <li role="option" data-v="10">10 条/页</li>
+    <li role="option" data-v="20">20 条/页</li>
+    <li role="option" data-v="50">50 条/页</li>
   </ul>
 </div>
 <div id="out">20</div>

@@ -76,9 +76,9 @@ const ulFormHTML = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><
 <div class="wrap" id="sizeSel3">
   <button id="trigger3">20 条/页</button>
   <ul id="dd3">
-    <li data-v="10">10 条/页</li>
-    <li data-v="20">20 条/页</li>
-    <li data-v="50">50 条/页</li>
+    <li role="option" data-v="10">10 条/页</li>
+    <li role="option" data-v="20">20 条/页</li>
+    <li role="option" data-v="50">50 条/页</li>
   </ul>
 </div>
 <div id="state3">20</div>
