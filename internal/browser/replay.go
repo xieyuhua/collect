@@ -164,6 +164,10 @@ func (r *Replayer) Do(s model.UIStep) error {
 			return err
 		}
 		p = fp.Timeout(r.Timeout)
+		// 录制时若在 iframe 内的元素上取路径，cpath 可能把 iframe 元素自身
+		// 的选择器当成第一段（如 "#listfrm > div > ... > input"）。进入 iframe
+		// 后该前缀在内部文档里并不存在，必须剥掉才能命中。
+		s.Selector = stripFramePrefix(s.Selector, s.Frame)
 	}
 	switch s.Action {
 	case "open":
@@ -541,6 +545,42 @@ func PageForFrame(page *rod.Page, sel string, timeout time.Duration) (*rod.Page,
 		p = fp
 	}
 	return p, nil
+}
+
+// stripFramePrefix 去掉选择器开头多余的 iframe 前缀。
+// 录制器在 iframe 内部生成路径时，可能把 iframe 元素自身的 id/选择器
+// 当作第一段（例如 "#listfrm > div > ul > li > input"），但进入 iframe
+// 后内部文档里没有 #listfrm 这个元素，直接查会全部落空。
+// 支持嵌套 iframe（"a >> b"）与常见的 div 包裹形式。
+func stripFramePrefix(sel, frame string) string {
+	sel = strings.TrimSpace(sel)
+	frame = strings.TrimSpace(frame)
+	if sel == "" || frame == "" {
+		return sel
+	}
+	parts := strings.Split(frame, ">>")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	// 依次尝试去掉完整 frame 选择器与最后一段 iframe 选择器
+	for _, pre := range []string{frame, last} {
+		pre = strings.TrimSpace(pre)
+		if pre == "" {
+			continue
+		}
+		if strings.HasPrefix(sel, pre+" > ") {
+			return strings.TrimSpace(sel[len(pre)+3:])
+		}
+	}
+	// 兜底：开头是 #id > 或 iframe... > 但 frame 与之不完全一致时，也剥掉第一段
+	if i := strings.Index(sel, " > "); i > 0 {
+		head := sel[:i]
+		if strings.HasPrefix(head, "#") || strings.HasPrefix(strings.ToLower(head), "iframe") {
+			// 仅当 head 与 frame 的某段"等价"（同样以 # 开头或iframe）时剥掉
+			if strings.HasPrefix(strings.TrimSpace(frame), head) || strings.Contains(frame, head) {
+				return strings.TrimSpace(sel[i+3:])
+			}
+		}
+	}
+	return sel
 }
 
 func (r *Replayer) element(p *rod.Page, sel string, s model.UIStep) (*rod.Element, error) {

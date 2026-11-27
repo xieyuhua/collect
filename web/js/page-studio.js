@@ -265,67 +265,153 @@
       // 生成动作的等价复现 JS：粘贴到目标页面控制台执行，
       // 验证「这一步到底能不能选到元素、选到后有没有反应」。
       // 逻辑与回放引擎（replay.go）一一对应，方便排错时对照。
+      // 生成动作的等价复现 JS：粘贴到目标页面控制台执行，
+      // 验证「这一步到底能不能选到元素、选到后有没有反应」。
+      // 与回放引擎（replay.go）对应：先尝试主文档，找不到就进入 iframe 并用
+      // 「去掉 iframe 前缀后的选择器」查找（iframe 元素本身不在其内部文档里）。
       function actionJS(a) {
         const sel = a.selector || '';
-        const lines = [];
+        const frame = a.frame || '';
+        const L = [];
+        // ---- 统一元素定位辅助：返回 { el, doc, where } 或 null ----
+        L.push(`function __locate(sel, frame) {`);
+        L.push(`  const strip = (s) => {`);
+        L.push(`    if (frame && s.startsWith(frame + ' > ')) return s.slice(frame.length + 3);`);
+        L.push(`    return s.replace(/^(#[\\w-]+|iframe[^>]*) > /, '');`);
+        L.push(`  };`);
+        L.push(`  const main = document.querySelector(sel);`);
+        L.push(`  if (main) return { el: main, doc: document, where: '主文档' };`);
+        L.push(`  const frames = frame ? Array.from(document.querySelectorAll(frame)) : Array.from(document.querySelectorAll('iframe,frame'));`);
+        L.push(`  const inner = strip(sel);`);
+        L.push(`  for (const f of frames) {`);
+        L.push(`    let d; try { d = f.contentDocument; } catch (e) { continue; }`);
+        L.push(`    if (!d) continue;`);
+        L.push(`    let hit = null; try { hit = d.querySelector(sel) || d.querySelector(inner); } catch (e) {}`);
+        L.push(`    if (hit) {`);
+        L.push(`      const label = f.id ? '#' + f.id : (f.name || f.src || 'iframe');`);
+        L.push(`      return { el: hit, doc: d, where: 'iframe ' + label + (inner !== sel ? '（去前缀: ' + inner + '）' : '') };`);
+        L.push(`    }`);
+        L.push(`  }`);
+        L.push(`  return null;`);
+        L.push(`}`);
+        L.push(``);
+
         if (a.type === 'click') {
           if (sel) {
-            lines.push(`// 1) 选择器能否命中（期望输出元素本身）`);
-            lines.push(`const el = document.querySelector(${JSON.stringify(sel)}); console.log(el);`);
-            lines.push(`// 2) 命中后真实点击`);
-            lines.push(`el && el.scrollIntoView({block:'center'}); el && el.click();`);
+            L.push(`const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+            L.push(`if (!got) { console.warn('❌ 未找到元素。请确认前面的操作已完成，或元素是否在跨域 iframe 内。'); }`);
+            L.push(`else { console.log('✅ 命中 @ ' + got.where, got.el); got.el.scrollIntoView && got.el.scrollIntoView({block:'center'}); got.el.click(); console.log('已点击'); }`);
           } else if (a.text) {
-            lines.push(`// 按文字找（与回放兜底一致：精确匹配内层元素）`);
-            lines.push(`const els = [...document.querySelectorAll('a,button,[role=button],li,span,div,label')]`);
-            lines.push(`  .filter(e => (e.innerText||'').trim() === ${JSON.stringify(a.text)});`);
-            lines.push(`console.log('命中', els.length, '个'); els[0] && els[0].click();`);
+            L.push(`// 无选择器：按文字找（与回放兜底一致）`);
+            L.push(`const els = [...document.querySelectorAll('a,button,[role=button],li,span,div,label')].filter(e => (e.innerText||'').trim() === ${JSON.stringify(a.text)});`);
+            L.push(`console.log('命中', els.length, '个'); els[0] && els[0].click();`);
           } else {
-            lines.push(`// 无选择器无文字，按坐标点击（与回放坐标兜底一致）`);
-            lines.push(`const el = document.elementFromPoint(${a.x}, ${a.y}); console.log('该坐标下的元素:', el);`);
-            lines.push(`el && el.click();`);
+            L.push(`const el = document.elementFromPoint(${a.x}, ${a.y}); console.log('该坐标下的元素:', el);`);
+            L.push(`el && el.click();`);
           }
+        } else if (a.type === 'press') {
+          const key = a.key || 'Enter';
+          L.push(`const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+          L.push(`if (!got) { console.warn('❌ 未找到元素，无法聚焦按键'); } else {`);
+          L.push(`  const el = got.el, doc = got.doc;`);
+          L.push(`  console.log('✅ 命中 @ ' + got.where, el);`);
+          L.push(`  el.scrollIntoView && el.scrollIntoView({block:'center'});`);
+          L.push(`  el.focus && el.focus();`);
+          L.push(`  const key = ${JSON.stringify(key)};`);
+          L.push(`  const codeMap = { Enter: 13, Tab: 9, Escape: 27, ' ': 32, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39 };`);
+          L.push(`  const keyCode = codeMap[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);`);
+          L.push(`  const win = doc.defaultView || window;`);
+          L.push(`  const opt = { key: key, code: key === ' ' ? 'Space' : key, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true };`);
+          L.push(`  el.dispatchEvent(new win.KeyboardEvent('keydown', opt));`);
+          L.push(`  el.dispatchEvent(new win.KeyboardEvent('keypress', opt));`);
+          L.push(`  el.dispatchEvent(new win.KeyboardEvent('keyup', opt));`);
+          L.push(`  console.log('已派发按键 ' + key);`);
+          if (key == 'Enter') {
+            L.push(`  // Enter 常见副作用：表单提交 / 相邻查询按钮`);
+            L.push(`  const form = el.form || el.closest('form');`);
+            L.push(`  if (form) {`);
+            L.push(`    if (form.requestSubmit) { try { form.requestSubmit(); } catch (e) {} }`);
+            L.push(`    else { try { form.submit(); } catch (e) {} }`);
+            L.push(`  } else {`);
+            L.push(`    const box = el.closest('li,div');`);
+            L.push(`    const btn = box && box.querySelector('button,input[type=button],a');`);
+            L.push(`    if (btn) { btn.click(); console.log('已点击相邻按钮'); }`);
+            L.push(`  }`);
+          }
+          L.push(`}`);
         } else if (a.type === 'select') {
           if (a.trigger) {
-            lines.push(`// 自定义下拉：先点开触发器`);
-            lines.push(`document.querySelector(${JSON.stringify(a.trigger)})?.click();`);
-            lines.push(`// 500ms 后在弹层里按 value/文字找选项并派发完整鼠标序列`);
-            lines.push(`setTimeout(() => {`);
-            lines.push(`  const norm = s => (s||'').replace(/\\s+/g,' ').trim();`);
-            lines.push(`  const val = ${JSON.stringify(a.value || '')}, txt = norm(${JSON.stringify(a.text || a.value || '')});`);
-            lines.push(`  const valOf = el => ['data-value','data-val','data-v','value'].map(a=>el.getAttribute(a)).find(v=>v) || norm(el.innerText);`);
-            lines.push(`  const cands = [...document.querySelectorAll('[role=option],li,dd,.el-select-dropdown__item,.ant-select-item-option')].filter(e => e.getBoundingClientRect().width > 0);`);
-            lines.push(`  const hit = cands.find(e => val && valOf(e) === val) || cands.find(e => norm(e.innerText) === txt) || cands.find(e => norm(e.innerText).includes(txt));`);
-            lines.push(`  console.log('选项命中:', hit);`);
-            lines.push(`  if (hit) {`);
-            lines.push(`    const r = hit.getBoundingClientRect(), cx = r.left + r.width/2, cy = r.top + r.height/2;`);
-            lines.push(`    const mk = (t, C) => new C(t, {bubbles:true, cancelable:true, clientX:cx, clientY:cy});`);
-            lines.push(`    hit.dispatchEvent(mk('pointerdown', PointerEvent)); hit.dispatchEvent(mk('mousedown', MouseEvent));`);
-            lines.push(`    hit.dispatchEvent(mk('pointerup', PointerEvent)); hit.dispatchEvent(mk('mouseup', MouseEvent));`);
-            lines.push(`    hit.dispatchEvent(mk('click', MouseEvent));`);
-            lines.push(`  }`);
-            lines.push(`}, 500);`);
+            L.push(`const gotT = __locate(${JSON.stringify(a.trigger)}, ${JSON.stringify(frame)});`);
+            L.push(`if (!gotT) { console.warn('❌ 未找到下拉触发器'); } else {`);
+            L.push(`  gotT.el.click();`);
+            L.push(`  console.log('已点开下拉，500ms 后选择选项…');`);
+            L.push(`  setTimeout(() => {`);
+            L.push(`    const doc = gotT.doc, win = doc.defaultView || window;`);
+            L.push(`    const norm = s => (s||'').replace(/\\s+/g,' ').trim();`);
+            L.push(`    const val = ${JSON.stringify(a.value || '')}, txt = norm(${JSON.stringify(a.text || a.value || '')});`);
+            L.push(`    const valOf = el => ['data-value','data-val','data-v','value'].map(x=>el.getAttribute(x)).find(v=>v) || norm(el.innerText);`);
+            L.push(`    const cands = [...doc.querySelectorAll('[role=option],li,dd,span,div,.el-select-dropdown__item,.ant-select-item-option')]`);
+            L.push(`      .filter(e => { const r=e.getBoundingClientRect(); const cs=getComputedStyle(e); return r.width>0&&r.height>0&&cs.display!=='none'&&cs.visibility!=='hidden'; });`);
+            L.push(`    const hit = cands.find(e => txt && norm(e.innerText) === txt) || cands.find(e => val && valOf(e) === val) || cands.find(e => txt && norm(e.innerText).includes(txt));`);
+            L.push(`    console.log('选项命中:', hit);`);
+            L.push(`    if (hit) {`);
+            L.push(`      const r = hit.getBoundingClientRect(), cx = r.left + r.width/2, cy = r.top + r.height/2;`);
+            L.push(`      const mk = (t, C) => new C(t, {bubbles:true, cancelable:true, clientX:cx, clientY:cy});`);
+            L.push(`      hit.dispatchEvent(mk('pointerdown', win.PointerEvent)); hit.dispatchEvent(mk('mousedown', win.MouseEvent));`);
+            L.push(`      hit.dispatchEvent(mk('pointerup', win.PointerEvent)); hit.dispatchEvent(mk('mouseup', win.MouseEvent));`);
+            L.push(`      hit.dispatchEvent(mk('click', win.MouseEvent));`);
+            L.push(`      console.log('已选择');`);
+            L.push(`    }`);
+            L.push(`  }, 500);`);
+            L.push(`}`);
           } else {
-            lines.push(`// 原生 select：设值并触发 change（与回放一致）`);
-            lines.push(`const el = document.querySelector(${JSON.stringify(sel)});`);
-            lines.push(`el.value = ${JSON.stringify(a.value || '')};`);
-            lines.push(`el.dispatchEvent(new Event('input', {bubbles:true}));`);
-            lines.push(`el.dispatchEvent(new Event('change', {bubbles:true}));`);
+            L.push(`const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+            L.push(`if (!got) { console.warn('❌ 未找到 select 元素'); } else {`);
+            L.push(`  const el = got.el, doc = got.doc, win = doc.defaultView || window;`);
+            L.push(`  el.value = ${JSON.stringify(a.value || '')};`);
+            L.push(`  el.dispatchEvent(new win.Event('input', {bubbles:true}));`);
+            L.push(`  el.dispatchEvent(new win.Event('change', {bubbles:true}));`);
+            L.push(`  console.log('已设置并派发 change，当前值:', el.value);`);
+            L.push(`}`);
           }
         } else if (a.type === 'input') {
-          lines.push(`const el = document.querySelector(${JSON.stringify(sel)});`);
-          lines.push(`el.focus(); el.select?.();`);
-          lines.push(`const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;`);
-          lines.push(`setter.call(el, ${JSON.stringify(a.value || '')});`);
-          lines.push(`el.dispatchEvent(new Event('input', {bubbles:true}));`);
-          lines.push(`el.dispatchEvent(new Event('change', {bubbles:true}));`);
+          L.push(`const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+          L.push(`if (!got) { console.warn('❌ 未找到输入框'); } else {`);
+          L.push(`  const el = got.el, doc = got.doc, win = doc.defaultView || window;`);
+          L.push(`  el.focus(); el.select && el.select();`);
+          L.push(`  const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;`);
+          L.push(`  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;`);
+          L.push(`  setter.call(el, ${JSON.stringify(a.value || '')});`);
+          L.push(`  el.dispatchEvent(new win.Event('input', {bubbles:true}));`);
+          L.push(`  el.dispatchEvent(new win.Event('change', {bubbles:true}));`);
+          L.push(`  console.log('已输入，当前值:', el.value);`);
+          L.push(`}`);
+        } else if (a.type === 'wait_for') {
+          L.push(`// 等待元素出现（最多 25 秒），与回放 wait_for 一致`);
+          L.push(`(function waitFor(){`);
+          L.push(`  let n = 0;`);
+          L.push(`  const t = setInterval(() => {`);
+          L.push(`    const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+          L.push(`    if (got || ++n > 50) { clearInterval(t); console.log(got ? '✅ 元素已出现 @ ' + got.where : '❌ 25 秒内未出现'); }`);
+          L.push(`  }, 500);`);
+          L.push(`})();`);
+        } else if (a.type === 'wait') {
+          L.push(`console.log('该步骤是等待 ${a.ms || 1000}ms，无需操作');`);
+        } else if (a.type === 'scroll') {
+          L.push(`window.scrollBy(0, ${a.ms || 600}); console.log('已滚动 ${a.ms || 600}px');`);
+        } else if (a.type === 'eval') {
+          L.push(`// 执行录制的 JS`);
+          L.push(a.value || '// (空)');
+        } else if (a.type === 'open') {
+          L.push(`console.log('该步骤是打开页面：${a.value || ''}');`);
         } else {
-          lines.push(`// ${a.type} 动作没有专用复现脚本，元素定位如下`);
-          lines.push(`console.log(document.querySelector(${JSON.stringify(sel)}));`);
+          L.push(`const got = __locate(${JSON.stringify(sel)}, ${JSON.stringify(frame)});`);
+          L.push(`console.log(got ? ('✅ 命中 @ ' + got.where) : '❌ 未找到', got && got.el);`);
         }
-        if (a.frame) {
-          lines.unshift(`// 注意：该动作发生在 iframe ${a.frame} 内，控制台请先用下拉切换到对应 iframe 上下文`);
+        if (frame) {
+          L.unshift(`// 该动作录制于 iframe ${frame} 内：下面的脚本会自动进入该 iframe 查找，无需手动切换控制台上下文`);
         }
-        return lines.join('\n');
+        return L.join('\n');
       }
 
       function showActionJS(a) {
