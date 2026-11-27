@@ -1,0 +1,17 @@
+{
+  "addr": "0.0.0.0:8686",
+  "data_dir": "E:\\workspace\\biaoge\\collect\\dist\\data",
+  "browser": {
+    "bin_path": "",
+    "headless": true,
+    "proxy": "",
+    "download_host": "npm",
+    "custom_host": "",
+    "revision": 0,
+    "no_sandbox": false
+  },
+  "max_body_kb": 256,
+  "proxy": "",
+  "timeout_sec": 60,
+  "run_workers": 2
+}

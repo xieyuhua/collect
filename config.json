@@ -1,6 +1,6 @@
 {
   "addr": "0.0.0.0:8686",
-  "data_dir": "E:\\workspace\\biaoge\\collect\\dist\\data",
+  "data_dir": "E:\\workspace\\biaoge\\collect\\bin\\data",
   "browser": {
     "bin_path": "",
     "headless": true,

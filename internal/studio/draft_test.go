@@ -275,6 +275,48 @@ func TestBuildDraftSelectDropsDuplicateTriggerClick(t *testing.T) {
 	}
 }
 
+// 组件库弹层选项（span/li 挂在 body 下、无 id）的选择器以 html > body 开头，
+// 之前被 actionToStep 一律丢弃，导致「录制时明明点了、生成时步骤不见了」。
+// 有按钮文字时必须保留（回放按文字兜底）。
+func TestBuildDraftKeepsWeakSelectorClickWithText(t *testing.T) {
+	now := time.Now().UnixMilli()
+	actions := []browser.Action{
+		{
+			// cpath 无 id/testid/name 锚点时的典型产物
+			Type: "click", Selector: "html > body > div:nth-of-type(2) > ul > li",
+			Text: "50 条/页", At: now,
+		},
+		{
+			// 连文字都没有但录到了坐标：保留坐标兜底
+			Type: "click", Selector: "html > body > span:nth-of-type(3)",
+			X: 412, Y: 806, At: now + 100,
+		},
+		{
+			// 无锚点、无文字、无坐标：真的没用，应丢弃
+			Type: "click", Selector: "html > body > div", At: now + 200,
+		},
+	}
+	s := &Session{ID: "s1", Mode: "ui", StartURL: "https://demo.test/list"}
+	task, err := buildDraftFrom(s, DraftRequest{Mode: "ui"}, demoRequests(), actions)
+	if err != nil {
+		t.Fatalf("生成草稿失败: %v", err)
+	}
+	steps := task["ui_steps"].([]model.UIStep)
+	clicks := 0
+	for _, st := range steps {
+		if st.Action != "click" {
+			continue
+		}
+		clicks++
+		if st.Selector == "html > body > div:nth-of-type(2) > ul > li" && st.Text == "" {
+			t.Errorf("带文字的弱选择器点击被丢弃: %+v", st)
+		}
+	}
+	if clicks < 2 {
+		t.Fatalf("期望保留 2 条弱选择器点击，实际 %d: %+v", clicks, steps)
+	}
+}
+
 // 纯接口模式：页面动作会被丢弃，但要给出提示
 func TestBuildDraftAPINotesDroppedActions(t *testing.T) {
 	now := time.Now().UnixMilli()

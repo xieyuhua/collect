@@ -897,13 +897,24 @@ func actionToStep(a browser.Action) (model.UIStep, bool) {
 		}
 		st = model.UIStep{Action: "open", Value: u, Desc: "打开 " + truncate(u, 50)}
 	case "click":
-		if a.Selector == "" || strings.HasPrefix(a.Selector, "html") {
+		// 选择器以 html/body 开头 = cpath 没找到任何 id/testid/name 锚点，
+		// 退化为纯标签路径。组件库弹层选项（挂在 body 下、无 id）都是这种，
+		// 不能直接丢弃：回放时有按钮文字兜底（ElementR）、有坐标兜底（X/Y），
+		// 只有「无锚点选择器 && 无文字 && 无坐标」的点击才真的是废动作。
+		weakSel := a.Selector == "" || strings.HasPrefix(a.Selector, "html") || a.Selector == "body"
+		if weakSel && strings.TrimSpace(a.Text) == "" && a.X <= 0 && a.Y <= 0 {
 			return model.UIStep{}, false
 		}
-		if strings.TrimSpace(a.Text) == "" && (a.Selector == "body" || a.Selector == "html") {
-			return model.UIStep{}, false
-		}
+		// 无锚点也无文字但录到了坐标：保留坐标点击（回放 Mouse.MoveTo 兜底）；
+		// 有文字：保留（回放按文字找）。desc 里提示选择器质量差，方便排查。
 		st = model.UIStep{Action: "click", Selector: a.Selector, Text: a.Text, X: a.X, Y: a.Y, Desc: "点击 " + truncate(a.Text, 20)}
+		if weakSel {
+			if strings.TrimSpace(a.Text) != "" {
+				st.Desc = "点击 " + truncate(a.Text, 20) + "（无锚点选择器，按文字回放）"
+			} else {
+				st.Desc = fmt.Sprintf("点击 (%.0f,%.0f)（无锚点选择器，按坐标回放）", a.X, a.Y)
+			}
+		}
 	case "input":
 		if a.Selector == "" {
 			return model.UIStep{}, false

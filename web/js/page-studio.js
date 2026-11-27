@@ -33,6 +33,36 @@
     </div>`,
   });
 
+  /* ---------------- 动作复现 JS 弹窗 ---------------- */
+  C.component('action-js-modal', {
+    props: { js: { type: String, required: true }, action: { type: Object, default: () => ({}) } },
+    setup(props) {
+      const copied = C.ref(false);
+      async function copy() {
+        try {
+          await navigator.clipboard.writeText(props.js);
+          copied.value = true;
+          setTimeout(() => { copied.value = false; }, 1500);
+        } catch (e) {
+          // 剪贴板不可用时退回手动选择
+          C.toast('复制失败，请手动选中复制', 'warn');
+        }
+      }
+      return { copied, copy };
+    },
+    template: `
+    <div>
+      <div class="hint" style="margin-bottom:8px">
+        把下面的代码粘贴到<b>目标页面</b>的浏览器控制台（F12）执行，验证这一步能否选到元素并触发页面反应。
+        执行后 console 会打印命中的元素；没命中说明回放也会在这里失败。
+      </div>
+      <div class="pre" style="max-height:400px;overflow:auto">{{ js }}</div>
+      <div class="row" style="margin-top:10px;justify-content:flex-end">
+        <button class="btn sm" data-act="action-js-copy" @click="copy">{{ copied ? '已复制 ✓' : '复制代码' }}</button>
+      </div>
+    </div>`,
+  });
+
   C.component('page-studio', {
     setup() {
       const sessions = C.reactive([]);
@@ -198,7 +228,79 @@
         if (a.type === 'click') return f + '点击 ' + (a.selector || a.text || '');
         if (a.type === 'input') return f + '输入 ' + (a.selector || '') + ' = ' + (a.value || a.text || '');
         if (a.type === 'navigate') return f + '打开 ' + (a.url || '');
+        if (a.type === 'select') return f + '选择 ' + (a.selector || '') + ' = ' + (a.value || a.text || '');
         return f + a.type + ' ' + (a.selector || '');
+      }
+
+      // 生成动作的等价复现 JS：粘贴到目标页面控制台执行，
+      // 验证「这一步到底能不能选到元素、选到后有没有反应」。
+      // 逻辑与回放引擎（replay.go）一一对应，方便排错时对照。
+      function actionJS(a) {
+        const sel = a.selector || '';
+        const lines = [];
+        if (a.type === 'click') {
+          if (sel) {
+            lines.push(`// 1) 选择器能否命中（期望输出元素本身）`);
+            lines.push(`const el = document.querySelector(${JSON.stringify(sel)}); console.log(el);`);
+            lines.push(`// 2) 命中后真实点击`);
+            lines.push(`el && el.scrollIntoView({block:'center'}); el && el.click();`);
+          } else if (a.text) {
+            lines.push(`// 按文字找（与回放兜底一致：精确匹配内层元素）`);
+            lines.push(`const els = [...document.querySelectorAll('a,button,[role=button],li,span,div,label')]`);
+            lines.push(`  .filter(e => (e.innerText||'').trim() === ${JSON.stringify(a.text)});`);
+            lines.push(`console.log('命中', els.length, '个'); els[0] && els[0].click();`);
+          } else {
+            lines.push(`// 无选择器无文字，按坐标点击（与回放坐标兜底一致）`);
+            lines.push(`const el = document.elementFromPoint(${a.x}, ${a.y}); console.log('该坐标下的元素:', el);`);
+            lines.push(`el && el.click();`);
+          }
+        } else if (a.type === 'select') {
+          if (a.trigger) {
+            lines.push(`// 自定义下拉：先点开触发器`);
+            lines.push(`document.querySelector(${JSON.stringify(a.trigger)})?.click();`);
+            lines.push(`// 500ms 后在弹层里按 value/文字找选项并派发完整鼠标序列`);
+            lines.push(`setTimeout(() => {`);
+            lines.push(`  const norm = s => (s||'').replace(/\\s+/g,' ').trim();`);
+            lines.push(`  const val = ${JSON.stringify(a.value || '')}, txt = norm(${JSON.stringify(a.text || a.value || '')});`);
+            lines.push(`  const valOf = el => ['data-value','data-val','data-v','value'].map(a=>el.getAttribute(a)).find(v=>v) || norm(el.innerText);`);
+            lines.push(`  const cands = [...document.querySelectorAll('[role=option],li,dd,.el-select-dropdown__item,.ant-select-item-option')].filter(e => e.getBoundingClientRect().width > 0);`);
+            lines.push(`  const hit = cands.find(e => val && valOf(e) === val) || cands.find(e => norm(e.innerText) === txt) || cands.find(e => norm(e.innerText).includes(txt));`);
+            lines.push(`  console.log('选项命中:', hit);`);
+            lines.push(`  if (hit) {`);
+            lines.push(`    const r = hit.getBoundingClientRect(), cx = r.left + r.width/2, cy = r.top + r.height/2;`);
+            lines.push(`    const mk = (t, C) => new C(t, {bubbles:true, cancelable:true, clientX:cx, clientY:cy});`);
+            lines.push(`    hit.dispatchEvent(mk('pointerdown', PointerEvent)); hit.dispatchEvent(mk('mousedown', MouseEvent));`);
+            lines.push(`    hit.dispatchEvent(mk('pointerup', PointerEvent)); hit.dispatchEvent(mk('mouseup', MouseEvent));`);
+            lines.push(`    hit.dispatchEvent(mk('click', MouseEvent));`);
+            lines.push(`  }`);
+            lines.push(`}, 500);`);
+          } else {
+            lines.push(`// 原生 select：设值并触发 change（与回放一致）`);
+            lines.push(`const el = document.querySelector(${JSON.stringify(sel)});`);
+            lines.push(`el.value = ${JSON.stringify(a.value || '')};`);
+            lines.push(`el.dispatchEvent(new Event('input', {bubbles:true}));`);
+            lines.push(`el.dispatchEvent(new Event('change', {bubbles:true}));`);
+          }
+        } else if (a.type === 'input') {
+          lines.push(`const el = document.querySelector(${JSON.stringify(sel)});`);
+          lines.push(`el.focus(); el.select?.();`);
+          lines.push(`const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;`);
+          lines.push(`setter.call(el, ${JSON.stringify(a.value || '')});`);
+          lines.push(`el.dispatchEvent(new Event('input', {bubbles:true}));`);
+          lines.push(`el.dispatchEvent(new Event('change', {bubbles:true}));`);
+        } else {
+          lines.push(`// ${a.type} 动作没有专用复现脚本，元素定位如下`);
+          lines.push(`console.log(document.querySelector(${JSON.stringify(sel)}));`);
+        }
+        if (a.frame) {
+          lines.unshift(`// 注意：该动作发生在 iframe ${a.frame} 内，控制台请先用下拉切换到对应 iframe 上下文`);
+        }
+        return lines.join('\n');
+      }
+
+      function showActionJS(a) {
+        C.openModal('动作复现 JS · ' + (a.type) + ' ' + (a.selector || a.text || '').slice(0, 30),
+          'action-js-modal', { js: actionJS(a), action: a });
       }
 
       async function buildDraft(save) {
@@ -237,6 +339,7 @@
         loadSessions: loadSessions, refreshCapture: refreshCapture, start: start,
         openSession: openSession, stopSession: stopSession, removeSession: removeSession,
         showReq: showReq, actionLabel: actionLabel, buildDraft: buildDraft,
+        showActionJS: showActionJS,
         modeTag: C.modeTag, shortUrl: C.shortUrl, bytes: C.bytes, fmtDur: C.fmtDur, timeHMS: C.timeHMS, fmt: C.fmt,
       };
     },
@@ -342,6 +445,9 @@
                 <div v-if="!actions.length" class="hint">暂无页面动作</div>
                 <div v-for="(a, i) in actions" :key="i" class="tl-item" :class="a.type">
                   <span class="tl-time">{{ timeHMS(a.at) }}</span>{{ actionLabel(a) }}
+                  <button class="btn sm ghost" style="margin-left:6px;padding:0 6px" data-act="action-js"
+                          title="生成等价 JS，粘贴到页面控制台复现这一步"
+                          @click="showActionJS(a)">JS</button>
                 </div>
               </div>
             </div>
