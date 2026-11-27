@@ -580,9 +580,6 @@ const recordJS = `() => {
     return tag === 'option';
   };
   // popupLayer 向上找「浮层容器」：绝对/固定定位且当前可见。
-  // 注意：这里只回答「元素是否在一个定位容器里」，不再按标签排除
-  // ul/nav/menu——普通菜单点击的防护由 optionLooksLike 完成
-  //（裸 li 不带 data-value/role 不算选项），否则 ul 型弹层会被挡掉。
   const popupLayer = (el) => {
     let cur = el;
     while (cur && cur !== document.body && cur !== document.documentElement) {
@@ -600,31 +597,79 @@ const recordJS = `() => {
   // seq：给动作一个单调序号，drain 时按它去重/合并
   let seq = 0;
   const stamp = (o) => { seq += 1; o.k = seq; return o; };
-  // selectableItem 判断元素是否可能是一个「可选项」。
-  // 宽松策略（用户要求「所有页面动作都要记录」）：显式选项语义优先，
-  // 但裸 li/dd/option、或短的 span/a/div/p 文本也可能是不带 data 属性的
-  // 组件库选项——只要它在「刚点开的浮层」里，就当选项记录。
-  const selectableItem = (el) => {
-    if (optionLooksLike(el)) return true;
+  // textInputLike 输入类控件：它们的 mousedown/click 是「聚焦/输入」，
+  // 绝不能当选项（否则普通表单输入框会被误记成下拉选择）。
+  const textInputLike = (el) => {
     const tag = (el.tagName || '').toLowerCase();
-    if (tag === 'li' || tag === 'dd' || tag === 'option') return true;
-    if (tag === 'span' || tag === 'a' || tag === 'div' || tag === 'p' || tag === 'em' || tag === 'strong') {
-      const t = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
-      return t.length > 0 && t.length <= 60;
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return false;
+    const ty = (el.type || '').toLowerCase();
+    return ty === '' || ty === 'text' || ty === 'password' || ty === 'number' ||
+      ty === 'search' || ty === 'email' || ty === 'tel' || ty === 'url' || ty === 'checkbox' || ty === 'radio' || ty === 'file' || ty === 'range';
+  };
+  // popupKind 判断浮层是不是「下拉弹层」而非页面常驻布局。
+  // 页面常驻的 fixed/absolute 容器（侧边菜单、吸顶导航、表单的 relative 区）
+  // 里点 li/div 是普通点击，不能算下拉选择。
+  //
+  // 最可靠的信号是「时机」：下拉弹层是点击触发器之后才出现的。
+  // 因此点击时给当时可见的定位容器打快照（__collect_shownLayers），
+  // mousedown 时如果 layer 不在快照里，说明它是这次点击后才显示的 → 弹层。
+  // 另外 class/role 带下拉语义、或直接挂在 body 下的 portal 也认定为弹层。
+  let shownLayers = null; // WeakSet：点击前就「已可见」的定位容器
+  const snapshotLayers = () => {
+    const set = new WeakSet();
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const e = all[i];
+      const cs = getComputedStyle(e);
+      if (cs.position !== 'absolute' && cs.position !== 'fixed') continue;
+      // 只记「当前可见」的：隐藏的弹层（display:none）不在快照里，
+      // 这样它被点开后再 mousedown 会被正确判成「新出现的弹层」。
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+      set.add(e);
     }
-    return false;
+    shownLayers = set;
+  };
+  const popupKind = (layer) => {
+    const cls = String(layer.className || '');
+    const role = (layer.getAttribute('role') || '').toLowerCase();
+    if (/dropdown|popover|popup|select|picker|options|combo|listbox|popper/i.test(cls) ||
+        /listbox|menu|dialog/i.test(role)) return 'dropdown';
+    if (layer.parentElement === document.body) return 'portal';
+    // 点击前不存在 / 不可见，点击后才出现 → 弹层
+    if (shownLayers && !shownLayers.has(layer)) return 'opened';
+    return '';
+  };
+  // optionRule 判断元素是否是「候选选项」。
+  //   1) 不是输入类控件、不是按钮/链接/图片
+  //   2) 带选项语义（role/组件库类/data-*）→ 直接接受
+  //   3) 裸 li/dd/span/div 等 → 先记为候选，由后面的「弹层判定」把关
+  const optionRule = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    if (textInputLike(el)) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'button' || tag === 'a' || tag === 'img' || tag === 'svg' || tag === 'input' ||
+        tag === 'select' || tag === 'textarea' || tag === 'html' || tag === 'body') return false;
+    if (optionLooksLike(el)) return true;
+    // 裸元素：只有文字短小才可能是选项（避免整块容器）
+    const t = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+    if (t.length === 0 || t.length > 60) return false;
+    return tag === 'li' || tag === 'dd' || tag === 'option' || tag === 'span' ||
+      tag === 'div' || tag === 'p' || tag === 'em' || tag === 'strong';
   };
   document.addEventListener('mousedown', (ev) => {
     const el = ev.target && ev.target.nodeType === 1 ? ev.target : null;
     if (!el) return;
     const rawTag = (el.tagName || '').toLowerCase();
     const rawText = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim().slice(0, 40);
-    if (!selectableItem(el)) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'not-item' }); return; }
-    // 必须在「浮层」里（绝对/固定定位容器、且非 body）。不强制要求
-    // 「刚刚点过触发器」——组件库可能在 mousedown 提交并立即移除元素，
-    // 也可能用户点开触发器后隔了一会儿才选；宁可多记，由生成层去重。
+    if (!optionRule(el)) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'not-option' }); return; }
+    // 必须在「浮层」里（绝对/固定定位容器、且非 body）。
     const layer = popupLayer(el);
     if (!layer) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'no-layer' }); return; }
+    // 浮层必须是「下拉弹层」，不能是页面常驻的 fixed/absolute 布局。
+    // 这是防止「普通点击被误判成下拉选择」的关键闸门。
+    const kind = popupKind(layer);
+    if (!kind) { diag({ ev: 'mousedown', tag: rawTag, text: rawText, skip: 'not-dropdown' }); return; }
     // 触发器：优先用最近点击的元素；没有则回退到浮层的「兄弟/前序」可点元素。
     let triggerEl = lastClickEl;
     let trigger = triggerEl ? cpath(triggerEl) : '';
@@ -649,6 +694,10 @@ const recordJS = `() => {
     lastClickEl = null; lastClickAt = 0;
   }, true);
   document.addEventListener('click', (ev) => {
+    // 在 capture 阶段、触发器自身 handler 打开弹层之前，快照当前存在的
+    // 定位容器。之后 mousedown 时若 layer 不在快照里 → 它是这次点击后
+    // 才出现的（下拉弹层），否则是页面常驻布局（菜单/表单区）。
+    snapshotLayers();
     let el = ev.target;
     if (!el || el.nodeType !== 1) return;
     const rawTag = (el.tagName || '').toLowerCase();
