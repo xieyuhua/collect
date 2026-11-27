@@ -292,6 +292,14 @@ func buildDraftFrom(s *Session, req DraftRequest, requests []browser.CapRequest,
 	if req.Mode == "" {
 		req.Mode = s.Mode
 	}
+	// 兜底：录制会话是纯 UI / 混合模式且确实录到了页面动作，但请求按「纯接口」
+	// 生成时，UI 步骤会被整体丢弃。这种情况几乎都是前端没同步模式导致的误操作，
+	// 直接把模式纠正为会话模式，避免「动作录到了、步骤却没了」。
+	correctedMode := ""
+	if req.Mode == "api" && s.Mode != "" && s.Mode != "api" && len(actions) > 0 {
+		correctedMode = req.Mode
+		req.Mode = s.Mode
+	}
 	if len(requests) == 0 && req.Mode != "ui" {
 		return nil, errors.New("没有捕获到任何请求，请先在浏览器中完成操作后再生成")
 	}
@@ -527,6 +535,12 @@ func buildDraftFrom(s *Session, req DraftRequest, requests []browser.CapRequest,
 		}
 	}
 	// 生成过程中的提示（前端只用来提示，不会写进任务表）
+	if correctedMode != "" {
+		notes = append([]string{fmt.Sprintf(
+			"检测到本次录制是「%s」模式且录到了 %d 个页面动作，但提交的是「纯接口」（%s）模式，"+
+				"已自动按「%s」生成，UI 步骤不会丢失。若确实只要接口，请把模式改为「纯接口」后重新生成。",
+			s.Mode, len(actions), correctedMode, s.Mode)}, notes...)
+	}
 	if len(notes) > 0 {
 		task["_notes"] = notes
 	}

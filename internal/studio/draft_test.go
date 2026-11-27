@@ -317,6 +317,51 @@ func TestBuildDraftKeepsWeakSelectorClickWithText(t *testing.T) {
 	}
 }
 
+// 前端 bug 兜底：录制会话是纯 UI、有页面动作，但请求按「纯接口」提交时，
+// 不能静默丢掉 UI 步骤，应自动按会话模式生成并给出提示。
+func TestBuildDraftCorrectsApiModeForUISession(t *testing.T) {
+	now := time.Now().UnixMilli()
+	actions := []browser.Action{
+		{Type: "click", Selector: "#pager li:nth-of-type(3)", Text: "50 条/页", At: now},
+		{Type: "click", Selector: "#search", Text: "查询", At: now + 100},
+	}
+	s := &Session{ID: "s1", Mode: "ui", StartURL: "https://demo.test/list"}
+	task, err := buildDraftFrom(s, DraftRequest{Mode: "api", ListReqIDs: []string{"stores"}},
+		demoRequests(), actions)
+	if err != nil {
+		t.Fatalf("生成草稿失败: %v", err)
+	}
+	if got := task["mode"]; got != "ui" {
+		t.Fatalf("模式未被纠正为 ui，实际 %v", got)
+	}
+	steps := task["ui_steps"].([]model.UIStep)
+	if len(steps) < 2 {
+		t.Fatalf("UI 步骤丢失，实际 %d 条: %+v", len(steps), steps)
+	}
+	notes, _ := task["_notes"].([]string)
+	if len(notes) == 0 {
+		t.Fatalf("应给出自动纠正模式的提示")
+	}
+}
+
+// 会话本来就是纯接口时，不做纠正（正常忽略动作）。
+func TestBuildDraftApiSessionNoCorrection(t *testing.T) {
+	now := time.Now().UnixMilli()
+	actions := []browser.Action{{Type: "click", Selector: "#x", Text: "x", At: now}}
+	s := &Session{ID: "s1", Mode: "api", StartURL: "https://demo.test/list"}
+	task, err := buildDraftFrom(s, DraftRequest{Mode: "api", ListReqIDs: []string{"stores"}},
+		demoRequests(), actions)
+	if err != nil {
+		t.Fatalf("生成草稿失败: %v", err)
+	}
+	if got := task["mode"]; got != "api" {
+		t.Fatalf("纯接口会话不应被纠正，实际 %v", got)
+	}
+	if steps := task["ui_steps"].([]model.UIStep); len(steps) != 0 {
+		t.Fatalf("纯接口模式不应生成 UI 步骤: %+v", steps)
+	}
+}
+
 // 纯接口模式：页面动作会被丢弃，但要给出提示
 func TestBuildDraftAPINotesDroppedActions(t *testing.T) {
 	now := time.Now().UnixMilli()

@@ -153,6 +153,10 @@
           const s = await C.api('/studio/sessions', { method: 'POST', body: { url: form.url, mode: form.mode } });
           studioId.value = s.id;
           selReq.value = '';
+          // 关键：草稿模式必须跟随本次录制模式。之前只有 openSession 会同步，
+          // 直接「启动录制 → 生成草稿」时 draft.mode 还是默认的 api，
+          // 导致纯 UI 录到的动作按「纯接口」生成，UI 步骤全部丢失。
+          if (s.mode === 'api' || s.mode === 'ui' || s.mode === 'hybrid') draft.mode = s.mode;
           C.toast('录制已开始，请在弹出的浏览器窗口操作', 'ok');
           await loadSessions();
           await refreshCapture();
